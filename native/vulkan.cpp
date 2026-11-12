@@ -3502,7 +3502,7 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInf
         total_bytes += decode_bytes;
         total_calls++;
 
-        if (total_calls >= 100) {
+        if (total_calls >= 1) {
             double mb = double(total_bytes) / (1024.0 * 1024.0);
             double ms = double(total_ns) / 1e6;
             LOGR("perf: DXT decode: %u textures, %.2f MB, %.3f ms total, %.3f ms/texture, %.3f ms/MB",
