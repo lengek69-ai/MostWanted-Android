@@ -1912,6 +1912,9 @@ def main():
     v.set_model(node, car)
     fe.set_layout_text("frontend", node, 0x18, car)  # the name in CARNAME_%s_%s (0x140CC1)
     make = fe.set_make(node, manufacturer)
+    unlock_error = fe.set_value("frontend", node, "UnlockedAt", 0, None, "16")
+    if unlock_error:
+        print("%s: couldn't set frontend.UnlockedAt=16 (%s)" % (car, unlock_error))
     attributes = v.write()
     memory = rebuild_memory_file(disc.load("GLOBAL\\GLOBALMEMORYFILE.BIN"),
                                  {bhash("GLOBAL\\ATTRIBUTES.BIN"): attributes, bhash("GLOBAL\\GLOBALB.LZC"): lzc})

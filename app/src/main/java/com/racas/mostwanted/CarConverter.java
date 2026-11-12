@@ -2813,6 +2813,10 @@ final class CarConverter {
                 v.setModel(node, k.car);
                 fe.setLayoutText("frontend", node, 0x18, k.car);  // the name in CARNAME_%s_%s (0x140CC1)
                 String make = fe.setMake(node, k.manufacturer);
+                String unlockError = fe.setValue("frontend", node, "UnlockedAt", 0, null, "16");
+                if (unlockError != null) {
+                    log.accept(k.car + ": couldn't set frontend.UnlockedAt=16 (" + unlockError + ")");
+                }
                 alias.put("CARS\\" + k.car + "\\VINYLS.BIN", "CARS\\GALLARDO\\VINYLS.BIN");
                 alias.put("CARS\\" + k.car + "\\PREVINYL.BIN", "CARS\\GALLARDO\\PREVINYL.BIN");
                 // for src/game/car_mods.cpp: the profile's list and the car's name
