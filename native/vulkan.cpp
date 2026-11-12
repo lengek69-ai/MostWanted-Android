@@ -1742,9 +1742,9 @@ bool VulkanBackend::CreateDevice() {
     depth_linear_ = fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
     vkGetPhysicalDeviceFormatProperties(pd_, VK_FORMAT_R32_SFLOAT, &fp);
     r32f_linear_ = fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-    LOGI("vulkan: depth %s, BC textures %s", depth_fmt_ == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8",
+    LOGR("vulkan: depth %s, BC textures %s", depth_fmt_ == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8",
          bc_ ? "on the GPU" : "decoded on the CPU");
-    LOGI("vulkan: BC texture compression supported: %s",
+    LOGR("vulkan: BC texture compression supported: %s",
          bc_ ? "YES" : "NO");
     return true;
 }
