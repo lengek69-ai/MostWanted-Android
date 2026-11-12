@@ -3452,6 +3452,8 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInf
     Transition(tx.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     uint32_t faces = d.cube ? 6 : 1;
     std::vector<uint8_t> px, decoded;
+    uint64_t decode_ns = 0;
+    uint64_t decode_bytes = 0;
     bool bc = fi.compressed && !tx.decode;
     uint32_t block = fi.host == Host::BC1 ? 8 : 16;
     for (uint32_t f = 0; f < faces; f++)
@@ -3461,7 +3463,10 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInf
             uint32_t mw = std::max(tx.img.w >> l, 1u), mh = std::max(tx.img.h >> l, 1u), md = std::max(tx.img.d >> l, 1u);
             const std::vector<uint8_t>* src = &px;
             if (tx.decode) {
+                auto decode_at = std::chrono::steady_clock::now();
                 DecodeDxt(fi.host, px, pitch, mw, mh, md, decoded);
+                decode_ns += SinceNs(decode_at);
+                decode_bytes += decoded.size();
                 pitch = mw * 4;
                 src = &decoded;
             }
@@ -3487,6 +3492,25 @@ void VulkanBackend::UploadTexture(Tex& tx, const TextureDesc& d, const FormatInf
     Transition(tx.img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     g_perf.tex_ns += SinceNs(t);
     g_perf.texes++;
+
+    if (decode_ns) {
+        static uint64_t total_ns = 0;
+        static uint64_t total_bytes = 0;
+        static uint32_t total_calls = 0;
+
+        total_ns += decode_ns;
+        total_bytes += decode_bytes;
+        total_calls++;
+
+        if (total_calls >= 100) {
+            double mb = double(total_bytes) / (1024.0 * 1024.0);
+            double ms = double(total_ns) / 1e6;
+            LOGR("perf: DXT decode: %u textures, %.2f MB, %.3f ms total, %.3f ms/texture, %.3f ms/MB",
+                 total_calls, mb, ms, ms / total_calls, mb > 0 ? ms / mb : 0.0);
+            total_ns = total_bytes = 0;
+            total_calls = 0;
+        }
+    }
 }
 
 VkImageView VulkanBackend::BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
