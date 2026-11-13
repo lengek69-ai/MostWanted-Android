@@ -476,13 +476,18 @@ public class ModsActivity extends Activity {
     private void refresh() {
         dialog = progress(getString(R.string.mods_update_title), R.string.mods_converting, false);
         new Thread(() -> {
+            File importLog = beginImportLog("Rebuild installed add-on cars");
             String error = null;
             try {
-                ModInstaller.refresh(this, line -> Log.i(TAG, line));
+                ModInstaller.refresh(this, line -> {
+                    Log.i(TAG, line);
+                    appendImportLog(importLog, line);
+                });
             } catch (Exception e) {
                 Log.w(TAG, "refresh", e);
                 error = getString(R.string.mods_error, String.valueOf(e.getMessage()));
             }
+            appendImportLog(importLog, error == null ? "RESULT: rebuild completed" : "RESULT: FAILED: " + error);
             String why = error;
             runOnUiThread(() -> {
                 if (isDestroyed()) return;
