@@ -74,6 +74,7 @@ struct DrawDiagCounters {
     uint64_t vertex_bytes = 0;
     uint64_t index_bytes = 0;
     uint64_t pipeline_binds = 0;
+    uint64_t pipeline_bind_skipped = 0;
     uint64_t bindset_calls = 0;
     uint64_t vertex_buffer_binds = 0;
     uint64_t index_buffer_binds = 0;
@@ -1319,6 +1320,7 @@ private:
     void SetViewport(float x, float y, float w, float h);
     void SetScissor(int32_t x0, int32_t y0, int32_t x1, int32_t y1);
     VkDescriptorSet Set(const VkImageView views[4], const VkSampler samplers[4]);
+    void BindGraphicsPipeline(VkPipeline pipe);
     void BindSet(VkDescriptorSet set, VkDeviceSize vc, VkDeviceSize dc);
 
     // shaders and pipelines
@@ -1483,6 +1485,7 @@ private:
     VkShaderModule last_ps_ = VK_NULL_HANDLE;
     PsoKey last_pso_{};
     VkPipeline last_pipe_ = VK_NULL_HANDLE;
+    VkPipeline bound_pipe_ = VK_NULL_HANDLE;
     std::array<float, 192 * 4> last_vsc_{};  // without the render thread's count (g_vsc_counted) only
     uint64_t last_vsc_changes_ = 0;
     Alloc last_vc_{};
@@ -2196,6 +2199,7 @@ void VulkanBackend::Begin() {
         FailGpu("vkBeginCommandBuffer", r, value_);
         return;
     }
+    bound_pipe_ = VK_NULL_HANDLE;
     if (VkQueryPool q = CurrentFrame().times) {
         vkCmdResetQueryPool(Cb(), q, 0, 2);
         vkCmdWriteTimestamp(Cb(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, q, 0);
@@ -2678,6 +2682,16 @@ VkDescriptorSet VulkanBackend::Set(const VkImageView views[4], const VkSampler s
     vkUpdateDescriptorSets(dev_, vkshader::kBindings, w, 0, nullptr);
     f.sets[key] = set;
     return set;
+}
+
+void VulkanBackend::BindGraphicsPipeline(VkPipeline pipe) {
+    if (bound_pipe_ == pipe) {
+        if (diag::Perf()) g_draw_diag.pipeline_bind_skipped++;
+        return;
+    }
+    vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    bound_pipe_ = pipe;
+    if (diag::Perf()) g_draw_diag.pipeline_binds++;
 }
 
 void VulkanBackend::BindSet(VkDescriptorSet set, VkDeviceSize vc, VkDeviceSize dc) {
@@ -3255,7 +3269,7 @@ void VulkanBackend::Blit(Image& dst, const VkRect2D& to, Image& src, const float
     const VkSampler samplers[4] = {linear_, point_, point_, point_};
     VkDescriptorSet set = Set(views, samplers);
     BeginRender(&dst, nullptr, "BLIT");
-    vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    BindGraphicsPipeline(pipe);
     BindSet(set, cb.off, cb.off);
     SetViewport(float(to.offset.x), float(to.offset.y), float(to.extent.width), float(to.extent.height));
     SetScissor(0, 0, int32_t(dst.w), int32_t(dst.h));
@@ -3297,7 +3311,7 @@ bool VulkanBackend::DepthCopy(const State& s) {
     const VkSampler samplers[4] = {linear_, point_, point_, point_};
     VkDescriptorSet set = Set(views, samplers);
     BeginRender(nullptr, &dst.img, "DEPTH_COPY");
-    vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    BindGraphicsPipeline(pipe);
     BindSet(set, cb.off, cb.off);
     SetViewport(0, 0, float(dst.w), float(dst.h));
     SetScissor(0, 0, int32_t(dst.w), int32_t(dst.h));
@@ -3956,10 +3970,9 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (draw_rt_) draw_rt_->drawn = true, draw_rt_->writes++;
     if (draw_ds_) draw_ds_->drawn = true;
     if (diag::Perf()) {
-        g_draw_diag.pipeline_binds++;
         g_draw_diag.bindset_calls++;
     }
-    vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    BindGraphicsPipeline(pipe);
     BindSet(set, vc.off, dc.off);
     Target& bt = draw_rt_ ? *draw_rt_ : *draw_ds_;
     float W = float(bt.w), H = float(bt.h);
@@ -4338,7 +4351,7 @@ void VulkanBackend::DrawFrame(Target* t, uint32_t index) {
         vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
     }
     if (pipe) {
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        BindGraphicsPipeline(pipe);
         BindSet(set, cbuf.off, cbuf.off);
         SetViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
         SetScissor(0, 0, int32_t(w), int32_t(h));
@@ -4647,13 +4660,14 @@ void VulkanBackend::Present(const Surface& front) {
         gpu_ns_ = 0;
 
         if (diag::Perf()) {
-            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu",
+            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu pipeline_bind_skipped=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu",
                  el,
                  (unsigned long long)g_draw_diag.indexed,
                  (unsigned long long)g_draw_diag.nonindexed,
                  (unsigned long long)g_draw_diag.vertex_bytes,
                  (unsigned long long)g_draw_diag.index_bytes,
                  (unsigned long long)g_draw_diag.pipeline_binds,
+                 (unsigned long long)g_draw_diag.pipeline_bind_skipped,
                  (unsigned long long)g_draw_diag.bindset_calls,
                  (unsigned long long)g_draw_diag.vertex_buffer_binds,
                  (unsigned long long)g_draw_diag.index_buffer_binds);
