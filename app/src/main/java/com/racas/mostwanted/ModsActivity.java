@@ -36,6 +36,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -738,14 +739,44 @@ public class ModsActivity extends Activity {
         }
     }
 
+    private File beginImportLog(String name) {
+        File logs = new File(new File(Environment.getExternalStorageDirectory(), MostWantedActivity.SHARED), "logs");
+        try {
+            if (!logs.isDirectory() && !logs.mkdirs()) return null;
+            File target = new File(logs, "mod-import.log");
+            try (FileOutputStream out = new FileOutputStream(target, false)) {
+                out.write(("=== " + name + " @ " + System.currentTimeMillis() + " ===\n").getBytes(StandardCharsets.UTF_8));
+                out.flush();
+                out.getFD().sync();
+            }
+            return target;
+        } catch (IOException | RuntimeException e) {
+            Log.w(TAG, "start mod import log", e);
+            return null;
+        }
+    }
+
+    private void appendImportLog(File target, String line) {
+        if (target == null) return;
+        try (FileOutputStream out = new FileOutputStream(target, true)) {
+            out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.getFD().sync();
+        } catch (IOException | RuntimeException e) {
+            Log.w(TAG, "write mod import log", e);
+        }
+    }
+
     private void install(String name, File file) {
         dialog = progress(name, R.string.mods_converting, false);  // nothing stops halfway from here
         new Thread(() -> {
+            File importLog = beginImportLog(name);
             ModInstaller.Installed result = null;
             String error = null;
             try {
                 result = ModInstaller.install(this, file, null, line -> {
                     Log.i(TAG, line);
+                    appendImportLog(importLog, line);
                     // a pack takes minutes: which car it has got to
                     if (line.startsWith("car ") || line.startsWith("pack "))
                         runOnUiThread(() -> progressText.setText(line.substring(line.indexOf(' ') + 1)));
@@ -762,10 +793,12 @@ public class ModsActivity extends Activity {
             } catch (Exception e) {
                 Log.w(TAG, "install", e);
                 error = getString(R.string.mods_error, String.valueOf(e.getMessage()));
-            } finally {
-                if (result == null) keepFailed(file, name);
-                file.delete();
             }
+            appendImportLog(importLog, result == null
+                    ? "RESULT: FAILED: " + (error == null ? "unknown error" : error)
+                    : "RESULT: installed=" + result.done + "; failed=" + result.failed);
+            if (result == null) keepFailed(file, name);
+            file.delete();
             ModInstaller.Installed done = result;
             String why = error;
             runOnUiThread(() -> {

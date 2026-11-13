@@ -1959,6 +1959,7 @@ final class CarConverter {
         Map<Integer, VltClass> classes = new HashMap<>();
         Map<Integer, String> typeNames = new HashMap<>();
         final Map<Long, Integer> aligns = new HashMap<>(), colls = new HashMap<>();
+        final Map<String, Set<String>> modelFields = new HashMap<>();
 
         Vault(byte[] b) {
             head = Arrays.copyOf(b, 0x80);
@@ -2177,14 +2178,62 @@ final class CarConverter {
             return null;
         }
 
-        // one name for the model and its collision: a StringKey, its two hashes and its text
-        void setModel(String node, String name) {
-            int place = fieldPlace("pvehicle", node, "MODEL", 0).bin;
-            long k = stringKey64(name);
-            put32(bin.a, place, (int) k);
-            put32(bin.a, place + 4, (int) (k >>> 32));
-            put32(bin.a, place + 8, attribKey(name));
-            setText(place + 12, name);
+        // MODEL is three StringKeys: Collision64, Collision, Visual.
+        // Each StringKey occupies 16 bytes: lookup8, attribute hash and text pointer.
+        String setModel(String node, String member, String name) {
+            Place p = fieldPlace("pvehicle", node, "MODEL", 0);
+            if (p.def == null) return "no MODEL field";
+            if (p.bin < 0) return "MODEL not in this node";
+            String key = member == null ? "" : member.toLowerCase(Locale.ROOT);
+            int[] offsets;
+            if (key.isEmpty()) {
+                offsets = p.def[2] >= 48 ? new int[] {0, 16, 32}
+                        : p.def[2] >= 32 ? new int[] {0, 16}
+                        : new int[] {0};
+            } else {
+                int at;
+                switch (key) {
+                    case "collision64": at = 0; break;
+                    case "collision": at = 16; break;
+                    case "visual": at = 32; break;
+                    default: return "unknown MODEL member " + member;
+                }
+                offsets = new int[] {at};
+            }
+            Set<String> done = modelFields.computeIfAbsent(node.toLowerCase(Locale.ROOT), n -> new HashSet<>());
+            long hash = stringKey64(name);
+            for (int at : offsets) {
+                if (p.def[2] < at + 16) return "MODEL member " + member + " exceeds field size " + p.def[2];
+                put32(bin.a, p.bin + at, (int) hash);
+                put32(bin.a, p.bin + at + 4, (int) (hash >>> 32));
+                put32(bin.a, p.bin + at + 8, attribKey(name));
+                setText(p.bin + at + 12, name);
+            }
+            if (key.isEmpty()) {
+                done.add("collision64");
+                if (p.def[2] >= 32) done.add("collision");
+                if (p.def[2] >= 48) done.add("visual");
+            } else {
+                done.add(key);
+            }
+            return null;
+        }
+
+        // Retain member-specific model references from the installer, and fill only omitted slots.
+        String completeModel(String node, String name) {
+            Place p = fieldPlace("pvehicle", node, "MODEL", 0);
+            if (p.def == null || p.bin < 0) return "no writable MODEL field";
+            Set<String> done = modelFields.computeIfAbsent(node.toLowerCase(Locale.ROOT), n -> new HashSet<>());
+            String[] members = {"Collision64", "Collision", "Visual"};
+            int[] offsets = {0, 16, 32};
+            for (int i = 0; i < members.length; i++) {
+                String key = members[i].toLowerCase(Locale.ROOT);
+                if (p.def[2] >= offsets[i] + 16 && !done.contains(key)) {
+                    String why = setModel(node, members[i], name);
+                    if (why != null) return why;
+                }
+            }
+            return p.def[2] < 16 ? "MODEL field too small" : null;
         }
 
         void setLayoutText(String cls, String node, int offset, String text) {
@@ -2360,8 +2409,10 @@ final class CarConverter {
                     skipped.merge("update of " + cls + " " + node, 1, Integer::sum);
                     continue;
                 }
-                if (name.equals("MODEL")) {
-                    v.setModel(node, text);
+                if (name.equals("MODEL") && cls.equals("pvehicle")) {
+                    String why = v.setModel(node, member, text);
+                    if (why != null) skipped.merge(cls + ".MODEL: " + why, 1, Integer::sum);
+                    else done++;
                     continue;
                 }
                 String why = v.setValue(cls, node, name, index, member, text);
@@ -2868,7 +2919,8 @@ final class CarConverter {
                 if (!fe.has("frontend", node)) fe.cloneNode("frontend", "gallardo", node, null);
                 // a copied pvehicle still names the Gallardo's: the car select then took this car for it
                 v.setValue("pvehicle", node, "frontend", 0, "Collection", node);
-                v.setModel(node, k.car);
+                String modelError = v.completeModel(node, k.car);
+                if (modelError != null) log.accept(k.car + ": could not complete MODEL references (" + modelError + ")");
                 fe.setLayoutText("frontend", node, 0x18, k.car);  // the name in CARNAME_%s_%s (0x140CC1)
                 String make = fe.setMake(node, k.manufacturer);
                 String unlockError = fe.setValue("frontend", node, "UnlockedAt", 0, null, "16");

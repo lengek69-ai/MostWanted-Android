@@ -1308,6 +1308,7 @@ class Vault:
         self.aligns = {}
         self.colls = {}
         self.names = {}
+        self.model_fields = collections.defaultdict(set)
         for r in self.rows:
             if r[1] == CLASS_ROW:
                 k, res, nf = struct.unpack_from("<III", self.vlt, r[4])
@@ -1464,12 +1465,49 @@ class Vault:
             self.bin[place + at:place + at + len(raw)] = raw
         return None
 
-    def set_model(self, node, name):
-        # one name for the model and its collision: a StringKey, its two hashes and its text
+    def set_model(self, node, member, name):
+        # MODEL is three StringKeys: Collision64, Collision, Visual.
         place, d = self.field_place("pvehicle", node, "MODEL", 0)
-        struct.pack_into("<Q", self.bin, place, string_key64(name))
-        struct.pack_into("<I", self.bin, place + 8, attrib_key(name))
-        self._set_text(place + 12, name)
+        if d is None:
+            return "no MODEL field"
+        if not isinstance(place, int):
+            return "MODEL not in this node"
+        key = member.lower() if member else ""
+        if not key:
+            offsets = (0, 16, 32) if d[2] >= 48 else (0, 16) if d[2] >= 32 else (0,)
+        else:
+            slots = {"collision64": 0, "collision": 16, "visual": 32}
+            if key not in slots:
+                return "unknown MODEL member " + member
+            offsets = (slots[key],)
+        done = self.model_fields[node.lower()]
+        for at in offsets:
+            if d[2] < at + 16:
+                return "MODEL member %s exceeds field size %d" % (member, d[2])
+            struct.pack_into("<Q", self.bin, place + at, string_key64(name))
+            struct.pack_into("<I", self.bin, place + at + 8, attrib_key(name))
+            self._set_text(place + at + 12, name)
+        if not key:
+            done.add("collision64")
+            if d[2] >= 32:
+                done.add("collision")
+            if d[2] >= 48:
+                done.add("visual")
+        else:
+            done.add(key)
+        return None
+
+    def complete_model(self, node, name):
+        place, d = self.field_place("pvehicle", node, "MODEL", 0)
+        if d is None or not isinstance(place, int):
+            return "no writable MODEL field"
+        done = self.model_fields[node.lower()]
+        for member, at in (("Collision64", 0), ("Collision", 16), ("Visual", 32)):
+            if d[2] >= at + 16 and member.lower() not in done:
+                why = self.set_model(node, member, name)
+                if why:
+                    return why
+        return "MODEL field too small" if d[2] < 16 else None
 
     # the wheels' places in a car's own copy of the Gallardo's; z stays, and each y keeps its side
     def set_wheels(self, node, w):
@@ -1641,8 +1679,12 @@ def apply_script(main, fe, path):
             if (attrib_key(cls), attrib_key(node)) not in v.colls:
                 skipped["update of %s %s" % (cls, node)] += 1
                 continue
-            if name == "MODEL":
-                v.set_model(node, text)
+            if name == "MODEL" and cls == "pvehicle":
+                why = v.set_model(node, member, text)
+                if why:
+                    skipped["%s.MODEL: %s" % (cls, why)] += 1
+                else:
+                    done += 1
                 continue
             why = v.set_value(cls, node, name, index, member, text)
             if why:
@@ -1914,7 +1956,9 @@ def main():
         fe.clone("frontend", "gallardo", node)
     # a copied pvehicle still names the Gallardo's: the car select then took this car for it
     v.set_value("pvehicle", node, "frontend", 0, "Collection", node)
-    v.set_model(node, car)
+    model_error = v.complete_model(node, car)
+    if model_error:
+        print("%s: could not complete MODEL references (%s)" % (car, model_error))
     fe.set_layout_text("frontend", node, 0x18, car)  # the name in CARNAME_%s_%s (0x140CC1)
     make = fe.set_make(node, manufacturer)
     unlock_error = fe.set_value("frontend", node, "UnlockedAt", 0, None, "16")
