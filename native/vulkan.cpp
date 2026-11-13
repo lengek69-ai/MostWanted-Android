@@ -59,6 +59,11 @@ constexpr VkDeviceSize kUboAlign = 256;
 constexpr VkFormat kBgra = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr uint32_t kSetsPerPool = 1024;
 constexpr uint32_t kPassStamps = 256;  // perf diagnostic: renderings timed in a listed frame
+constexpr VkQueryPipelineStatisticFlags kPerfPipelineStatistics =
+    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT |
+    VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
+    VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT |
+    VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
 // the scale the game's effect buffers are drawn at, at most (VulkanBackend::TargetScale)
 constexpr float kEffectScale = 1.0f;
 static_assert(sizeof(DrawConstants) <= kUboRange);
@@ -81,6 +86,11 @@ struct DrawDiagCounters {
     uint64_t bindset_calls = 0;
     uint64_t vertex_buffer_binds = 0;
     uint64_t index_buffer_binds = 0;
+    uint64_t gpu_stat_samples = 0;
+    uint64_t ia_vertices = 0;
+    uint64_t ia_primitives = 0;
+    uint64_t vs_invocations = 0;
+    uint64_t fs_invocations = 0;
 };
 
 DrawDiagCounters g_draw_diag;
@@ -1242,6 +1252,9 @@ private:
         VkSemaphore acquire = VK_NULL_HANDLE;
         VkQueryPool times = VK_NULL_HANDLE;  // the command buffer's start and end on the GPU, for its load
         bool timed = false;                  // submitted with both written
+        VkQueryPool stats = VK_NULL_HANDLE;  // optional pipeline counters, diagnostic only
+        bool stats_recording = false;
+        bool stats_timed = false;
         bool pool_clean = true;              // the pool reset, ready to record; under reset_m_
     };
     struct Alloc {
@@ -1398,6 +1411,7 @@ private:
     VkQueue queue_ = VK_NULL_HANDLE;
     std::vector<const char*> dev_exts_;
     bool bc_ = false;
+    bool pipeline_stats_ = false;
     VkFormat depth_fmt_ = VK_FORMAT_D24_UNORM_S8_UINT;
     bool depth_linear_ = false;
     bool r32f_linear_ = false;
@@ -1718,7 +1732,9 @@ bool VulkanBackend::CreateDevice() {
     feats_.fillModeNonSolid = f2.features.fillModeNonSolid;
     feats_.textureCompressionBC = f2.features.textureCompressionBC;
     feats_.depthClamp = f2.features.depthClamp;
+    feats_.pipelineStatisticsQuery = f2.features.pipelineStatisticsQuery;
     bc_ = feats_.textureCompressionBC;
+    pipeline_stats_ = feats_.pipelineStatisticsQuery;
     VkPhysicalDeviceFeatures2 on{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, chain()};
     on.features = feats_;
     dr.dynamicRendering = VK_TRUE;
@@ -1953,7 +1969,18 @@ bool VulkanBackend::CreateFrames() {
             qi.queryCount = 2;
             if (vkCreateQueryPool(dev_, &qi, nullptr, &f.times) != VK_SUCCESS) f.times = VK_NULL_HANDLE;
         }
+        if (pipeline_stats_) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qi.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+            qi.queryCount = 1;
+            qi.pipelineStatistics = kPerfPipelineStatistics;
+            if (vkCreateQueryPool(dev_, &qi, nullptr, &f.stats) != VK_SUCCESS) {
+                f.stats = VK_NULL_HANDLE;
+                pipeline_stats_ = false;
+            }
+        }
     }
+    LOGR("vulkan: pipeline statistics queries %s", pipeline_stats_ ? "available" : "unavailable");
     if (timeline_ok_) std::thread([this] { ResetPools(); }).detach();
     return true;
 }
@@ -2203,9 +2230,15 @@ void VulkanBackend::Begin() {
         return;
     }
     bound_pipe_ = VK_NULL_HANDLE;
-    if (VkQueryPool q = CurrentFrame().times) {
+    Frame& f = CurrentFrame();
+    if (VkQueryPool q = f.times) {
         vkCmdResetQueryPool(Cb(), q, 0, 2);
         vkCmdWriteTimestamp(Cb(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, q, 0);
+    }
+    if (f.stats && diag::Perf()) {
+        vkCmdResetQueryPool(Cb(), f.stats, 0, 1);
+        vkCmdBeginQuery(Cb(), f.stats, 0, 0);
+        f.stats_recording = true;
     }
     rendering_ = false;
     rend_color_ = rend_depth_ = nullptr;
@@ -2316,6 +2349,18 @@ bool VulkanBackend::ResetFrame(Frame& f) {
             g_perf.gpu_ns += uint64_t(ns);
         }
     }
+    if (f.stats_timed) {
+        f.stats_timed = false;
+        uint64_t q[4] = {};
+        if (vkGetQueryPoolResults(dev_, f.stats, 0, 1, sizeof(q), q, sizeof(q), VK_QUERY_RESULT_64_BIT) ==
+            VK_SUCCESS) {
+            g_draw_diag.gpu_stat_samples++;
+            g_draw_diag.ia_vertices += q[0];
+            g_draw_diag.ia_primitives += q[1];
+            g_draw_diag.vs_invocations += q[2];
+            g_draw_diag.fs_invocations += q[3];
+        }
+    }
     for (Image& im : f.images) Destroy(im);
     for (Buffer& b : f.buffers) Destroy(b);
     f.images.clear();
@@ -2338,6 +2383,11 @@ bool VulkanBackend::Submit(bool wait, bool present) {
     if (gpu_failed_) return false;
     EndRender();
     Frame& f = CurrentFrame();
+    if (f.stats_recording) {
+        vkCmdEndQuery(f.cb, f.stats, 0);
+        f.stats_recording = false;
+        f.stats_timed = true;
+    }
     if (f.times) {
         vkCmdWriteTimestamp(f.cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.times, 1);
         f.timed = true;
@@ -4668,7 +4718,7 @@ void VulkanBackend::Present(const Surface& front) {
         gpu_ns_ = 0;
 
         if (diag::Perf()) {
-            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu pipeline_bind_skipped=%llu set_cache_hits=%llu set_cache_misses=%llu descriptor_binds=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu",
+            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu pipeline_bind_skipped=%llu set_cache_hits=%llu set_cache_misses=%llu descriptor_binds=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu gpu_stat_samples=%llu ia_vertices=%llu ia_primitives=%llu vs_invocations=%llu fs_invocations=%llu",
                  el,
                  (unsigned long long)g_draw_diag.indexed,
                  (unsigned long long)g_draw_diag.nonindexed,
@@ -4681,7 +4731,12 @@ void VulkanBackend::Present(const Surface& front) {
                  (unsigned long long)g_draw_diag.descriptor_binds,
                  (unsigned long long)g_draw_diag.bindset_calls,
                  (unsigned long long)g_draw_diag.vertex_buffer_binds,
-                 (unsigned long long)g_draw_diag.index_buffer_binds);
+                 (unsigned long long)g_draw_diag.index_buffer_binds,
+                 (unsigned long long)g_draw_diag.gpu_stat_samples,
+                 (unsigned long long)g_draw_diag.ia_vertices,
+                 (unsigned long long)g_draw_diag.ia_primitives,
+                 (unsigned long long)g_draw_diag.vs_invocations,
+                 (unsigned long long)g_draw_diag.fs_invocations);
             g_draw_diag = {};
         }
     }
