@@ -67,14 +67,14 @@ final class CarConverter {
     // one car, converted; its big files are on the storage once kept
     static final class Package {
         String car, title, manufacturer;
-        byte[] geometry, textures, script, logo;  // script and logo may be null
+        byte[] geometry, textures, script, logo, vinyls, previnyls;  // optional package files
         int logoWidth, logoHeight, logoFormat;
     }
 
     // a kept car for build: its two big files by path
     static final class Kept {
         String car, title, manufacturer;
-        File geometry, textures;
+        File geometry, textures, vinyls, previnyls;
         byte[] script, logo;
         int logoWidth, logoHeight, logoFormat;
     }
@@ -2163,7 +2163,9 @@ final class CarConverter {
                 Integer m = MEMBERS.get(member);
                 if (m == null) return "unknown member " + member;
                 at = m;
-                raw = member.equals("Collection") || member.equals("Class") ? ints(attribKey(text)) : packFloat(text);
+                if (member.equals("Collection") || member.equals("Class") || member.equals("CollectionKey") || member.equals("ClassKey"))
+                    raw = ints(attribKey(text));
+                else raw = packScalar(text, "Int", 4);
             } else {
                 String type = typeNames.get(p.def[0]);
                 raw = packScalar(text, type == null ? "" : type, p.def[2]);
@@ -2285,8 +2287,9 @@ final class CarConverter {
 
     private static final Map<String, Integer> MEMBERS = new HashMap<>();
     static {
-        String[] names = {"Front", "Rear", "X", "Y", "Z", "W", "DegPerG", "DegPerSec", "MaxG", "Class", "Collection"};
-        int[] at = {0, 4, 0, 4, 8, 12, 0, 4, 8, 0, 4};
+        String[] names = {"Front", "Rear", "X", "Y", "Z", "W", "DegPerG", "DegPerSec", "MaxG", "Class", "Collection",
+                "ClassKey", "CollectionKey", "UpgradeLevel", "Level"};
+        int[] at = {0, 4, 0, 4, 8, 12, 0, 4, 8, 0, 4, 0, 4, 8, 8};
         for (int i = 0; i < names.length; i++) MEMBERS.put(names[i], at[i]);
     }
 
@@ -2350,6 +2353,8 @@ final class CarConverter {
                 String name = m.group(1);
                 int index = m.group(2) == null ? 0 : Integer.parseInt(m.group(2));
                 String member = w.length > 5 ? w[4] : null, text = w[w.length - 1];
+                // VltEd writes nested references as: ReferencedRow ClassKey|CollectionKey|UpgradeLevel value.
+                if (member != null && member.equals("ReferencedRow") && w.length >= 7) member = w[5];
                 if (!v.has(cls, node)) {
                     skipped.merge("update of " + cls + " " + node, 1, Integer::sum);
                     continue;
@@ -2738,6 +2743,14 @@ final class CarConverter {
         }
         String script = findScript(mod, car);
         if (script != null) pack.script = mod.get(script);
+        String carRoot = geoPath.substring(0, geoPath.length() - "GEOMETRY.BIN".length());
+        for (String k : mod.keySet()) {
+            if (k.equalsIgnoreCase(carRoot + "VINYLS.BIN")) pack.vinyls = mod.get(k);
+            else if (k.equalsIgnoreCase(carRoot + "PREVINYL.BIN")) pack.previnyls = mod.get(k);
+        }
+        log.accept("package: script " + (pack.script == null ? "none" : pack.script.length + " bytes")
+                + ", VINYLS " + (pack.vinyls == null ? "fallback" : pack.vinyls.length + " bytes")
+                + ", PREVINYL " + (pack.previnyls == null ? "fallback" : pack.previnyls.length + " bytes"));
         pack.title = titleCase(car);
         // the name from the strings an installer adds: english.end's first, then any other .end (a repack's own script).
         // With no CarTypeInfo, the string's make is the car's too
@@ -2861,8 +2874,10 @@ final class CarConverter {
                 if (unlockError != null) {
                     log.accept(k.car + ": couldn't set frontend.UnlockedAt=16 (" + unlockError + ")");
                 }
-                alias.put("CARS\\" + k.car + "\\VINYLS.BIN", "CARS\\GALLARDO\\VINYLS.BIN");
-                alias.put("CARS\\" + k.car + "\\PREVINYL.BIN", "CARS\\GALLARDO\\PREVINYL.BIN");
+                if (k.vinyls == null) alias.put("CARS\\" + k.car + "\\VINYLS.BIN", "CARS\\GALLARDO\\VINYLS.BIN");
+                else files.put("CARS\\" + k.car + "\\VINYLS.BIN", k.vinyls);
+                if (k.previnyls == null) alias.put("CARS\\" + k.car + "\\PREVINYL.BIN", "CARS\\GALLARDO\\PREVINYL.BIN");
+                else files.put("CARS\\" + k.car + "\\PREVINYL.BIN", k.previnyls);
                 // for src/game/car_mods.cpp: the profile's list and the car's name
                 String logoInfo = "0 0 0 0";
                 if (k.logo != null) {
