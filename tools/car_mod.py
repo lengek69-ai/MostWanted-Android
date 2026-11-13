@@ -1448,8 +1448,10 @@ class Vault:
         at = MEMBERS.get(member, 0) if member else 0
         if member and member not in MEMBERS:
             return "unknown member " + member
-        if member in ("Collection", "Class"):
+        if member in ("Collection", "Class", "CollectionKey", "ClassKey"):
             raw = struct.pack("<I", attrib_key(text))
+        elif member in ("UpgradeLevel", "Level"):
+            raw = pack_scalar(text, "Int", 4)
         elif member:
             raw = pack_float(text)
         else:
@@ -1549,6 +1551,7 @@ MEMBERS = {
     "X": 0, "Y": 4, "Z": 8, "W": 12,
     "DegPerG": 0, "DegPerSec": 4, "MaxG": 8,
     "Class": 0, "Collection": 4,
+    "ClassKey": 0, "CollectionKey": 4, "UpgradeLevel": 8, "Level": 8,
 }
 
 
@@ -1633,6 +1636,8 @@ def apply_script(main, fe, path):
             name, index = m.group(1), int(m.group(2) or 0)
             member = w[4] if len(w) > 5 else None
             text = w[-1]
+            if member == "ReferencedRow" and len(w) >= 7:
+                member = w[5]
             if (attrib_key(cls), attrib_key(node)) not in v.colls:
                 skipped["update of %s %s" % (cls, node)] += 1
                 continue
@@ -1928,8 +1933,17 @@ def main():
         "CARS\\%s\\GEOMETRY.BIN" % car: geometry,
         "CARS\\%s\\TEXTURES.BIN" % car: textures,
     }
-    alias = {"CARS\\%s\\VINYLS.BIN" % car: "CARS\\GALLARDO\\VINYLS.BIN",
-             "CARS\\%s\\PREVINYL.BIN" % car: "CARS\\GALLARDO\\PREVINYL.BIN"}
+    alias = {}
+    vinyl_path = os.path.join(os.path.dirname(geo[0]), "VINYLS.BIN")
+    previnyl_path = os.path.join(os.path.dirname(geo[0]), "PREVINYL.BIN")
+    if os.path.isfile(vinyl_path):
+        files["CARS\\%s\\VINYLS.BIN" % car] = open(vinyl_path, "rb").read()
+    else:
+        alias["CARS\\%s\\VINYLS.BIN" % car] = "CARS\\GALLARDO\\VINYLS.BIN"
+    if os.path.isfile(previnyl_path):
+        files["CARS\\%s\\PREVINYL.BIN" % car] = open(previnyl_path, "rb").read()
+    else:
+        alias["CARS\\%s\\PREVINYL.BIN" % car] = "CARS\\GALLARDO\\PREVINYL.BIN"
     archive, zdir, data = build_zdir(disc, files, alias)
     nfs = os.path.join(args.out, "NFS")
     os.makedirs(nfs, exist_ok=True)
