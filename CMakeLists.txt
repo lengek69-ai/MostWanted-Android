@@ -87,16 +87,31 @@ if(NOT TARGET SDL3::SDL3)
     add_subdirectory(${SDL_DIR} ${CMAKE_CURRENT_BINARY_DIR}/SDL EXCLUDE_FROM_ALL)
 endif()
 
-set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+set(ENABLE_OPT ON CACHE BOOL "" FORCE)
 set(ENABLE_HLSL ON CACHE BOOL "" FORCE)
 set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
 set(ENABLE_SPVREMAPPER OFF CACHE BOOL "" FORCE)
 set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
 set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(BUILD_EXTERNAL OFF CACHE BOOL "" FORCE)
+set(BUILD_EXTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG 16.0.0 GIT_SHALLOW TRUE)
 FetchContent_Declare(tomlplusplus GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git GIT_TAG v3.4.0 GIT_SHALLOW TRUE)
 FetchContent_Declare(imgui GIT_REPOSITORY https://github.com/ocornut/imgui.git GIT_TAG v1.91.0 GIT_SHALLOW TRUE)
+# glslang keeps its pinned SPIRV-Tools and SPIRV-Headers in External/, populated by its source-update script.
+FetchContent_GetProperties(glslang)
+if(NOT glslang_POPULATED)
+    FetchContent_Populate(glslang)
+endif()
+if(NOT EXISTS ${glslang_SOURCE_DIR}/External/spirv-tools/CMakeLists.txt)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} ${glslang_SOURCE_DIR}/update_glslang_sources.py --dir ${glslang_SOURCE_DIR}
+        RESULT_VARIABLE glslang_sources_result
+        WORKING_DIRECTORY ${glslang_SOURCE_DIR})
+    if(NOT glslang_sources_result EQUAL 0)
+        message(FATAL_ERROR "Could not populate glslang's pinned SPIRV-Tools dependencies")
+    endif()
+endif()
 FetchContent_MakeAvailable(glslang tomlplusplus imgui)
 
 # the SDK's runtime but its Windows parts, and those the game replaces (src/sound, src/d3d)

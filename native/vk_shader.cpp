@@ -19,7 +19,7 @@ namespace {
 std::filesystem::path g_dir;
 std::mutex g_lock;
 // bumped when the translation below changes, so older cached modules are not used
-constexpr uint32_t kCacheVersion = 2;
+constexpr uint32_t kCacheVersion = 3;
 
 // fxc's spellings glslang does not read: 1.#INF for infinity
 std::string Adapt(const std::string& hlsl) {
@@ -113,7 +113,8 @@ bool Compile(const std::string& hlsl, const char* entry, Stage stage, uint64_t h
         return false;
     }
     glslang::SpvOptions options;
-    options.disableOptimizer = false;  // optimize generated SPIR-V before handing it to the driver
+    options.disableOptimizer = false;  // enable glslang's SPIRV-Tools HLSL legalization and cleanup passes
+    options.optimizeSize = true;  // also remove redundant SPIR-V and unused input components
     options.validate = false;
     spirv.clear();
     glslang::GlslangToSpv(*program.getIntermediate(lang), spirv, &options);
