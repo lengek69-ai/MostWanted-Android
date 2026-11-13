@@ -75,6 +75,10 @@ struct DrawDiagCounters {
     uint64_t index_bytes = 0;
     uint64_t pipeline_binds = 0;
     uint64_t pipeline_bind_skipped = 0;
+    uint64_t set_cache_hits = 0;
+    uint64_t set_cache_misses = 0;
+    uint64_t descriptor_binds = 0;
+    uint64_t descriptor_bind_skipped = 0;
     uint64_t bindset_calls = 0;
     uint64_t vertex_buffer_binds = 0;
     uint64_t index_buffer_binds = 0;
@@ -1486,6 +1490,8 @@ private:
     PsoKey last_pso_{};
     VkPipeline last_pipe_ = VK_NULL_HANDLE;
     VkPipeline bound_pipe_ = VK_NULL_HANDLE;
+    VkDescriptorSet bound_set_ = VK_NULL_HANDLE;
+    uint32_t bound_set_offsets_[2] = {};
     std::array<float, 192 * 4> last_vsc_{};  // without the render thread's count (g_vsc_counted) only
     uint64_t last_vsc_changes_ = 0;
     Alloc last_vc_{};
@@ -2200,6 +2206,8 @@ void VulkanBackend::Begin() {
         return;
     }
     bound_pipe_ = VK_NULL_HANDLE;
+    bound_set_ = VK_NULL_HANDLE;
+    bound_set_offsets_[0] = bound_set_offsets_[1] = 0;
     if (VkQueryPool q = CurrentFrame().times) {
         vkCmdResetQueryPool(Cb(), q, 0, 2);
         vkCmdWriteTimestamp(Cb(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, q, 0);
@@ -2632,9 +2640,14 @@ VkDescriptorSet VulkanBackend::Set(const VkImageView views[4], const VkSampler s
         f.sets.clear();
         f.set_gen = view_gen_;
         f.pools_dirty = true;
+        bound_set_ = VK_NULL_HANDLE;
     }
     uint64_t key = Hash(views, sizeof(VkImageView) * 4, Hash(samplers, sizeof(VkSampler) * 4));
-    if (auto it = f.sets.find(key); it != f.sets.end()) return it->second;
+    if (auto it = f.sets.find(key); it != f.sets.end()) {
+        if (diag::Perf()) g_draw_diag.set_cache_hits++;
+        return it->second;
+    }
+    if (diag::Perf()) g_draw_diag.set_cache_misses++;
     VkDescriptorSet set = VK_NULL_HANDLE;
     for (;;) {
         if (f.pool_at == f.pools.size()) {
@@ -2696,7 +2709,18 @@ void VulkanBackend::BindGraphicsPipeline(VkPipeline pipe) {
 
 void VulkanBackend::BindSet(VkDescriptorSet set, VkDeviceSize vc, VkDeviceSize dc) {
     uint32_t offs[2] = {uint32_t(vc), uint32_t(dc)};
+    if (set != VK_NULL_HANDLE &&
+        bound_set_ == set &&
+        bound_set_offsets_[0] == offs[0] &&
+        bound_set_offsets_[1] == offs[1]) {
+        if (diag::Perf()) g_draw_diag.descriptor_bind_skipped++;
+        return;
+    }
     vkCmdBindDescriptorSets(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set, 2, offs);
+    bound_set_ = set;
+    bound_set_offsets_[0] = offs[0];
+    bound_set_offsets_[1] = offs[1];
+    if (diag::Perf()) g_draw_diag.descriptor_binds++;
 }
 
 // ---- shaders and pipelines
@@ -4660,7 +4684,7 @@ void VulkanBackend::Present(const Surface& front) {
         gpu_ns_ = 0;
 
         if (diag::Perf()) {
-            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu pipeline_bind_skipped=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu",
+            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu pipeline_bind_skipped=%llu set_cache_hits=%llu set_cache_misses=%llu descriptor_binds=%llu descriptor_bind_skipped=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu",
                  el,
                  (unsigned long long)g_draw_diag.indexed,
                  (unsigned long long)g_draw_diag.nonindexed,
@@ -4668,6 +4692,10 @@ void VulkanBackend::Present(const Surface& front) {
                  (unsigned long long)g_draw_diag.index_bytes,
                  (unsigned long long)g_draw_diag.pipeline_binds,
                  (unsigned long long)g_draw_diag.pipeline_bind_skipped,
+                 (unsigned long long)g_draw_diag.set_cache_hits,
+                 (unsigned long long)g_draw_diag.set_cache_misses,
+                 (unsigned long long)g_draw_diag.descriptor_binds,
+                 (unsigned long long)g_draw_diag.descriptor_bind_skipped,
                  (unsigned long long)g_draw_diag.bindset_calls,
                  (unsigned long long)g_draw_diag.vertex_buffer_binds,
                  (unsigned long long)g_draw_diag.index_buffer_binds);
