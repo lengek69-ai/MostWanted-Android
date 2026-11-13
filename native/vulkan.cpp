@@ -68,6 +68,19 @@ uint64_t SinceNs(std::chrono::steady_clock::time_point t) {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count());
 }
 
+struct DrawDiagCounters {
+    uint64_t indexed = 0;
+    uint64_t nonindexed = 0;
+    uint64_t vertex_bytes = 0;
+    uint64_t index_bytes = 0;
+    uint64_t pipeline_binds = 0;
+    uint64_t bindset_calls = 0;
+    uint64_t vertex_buffer_binds = 0;
+    uint64_t index_buffer_binds = 0;
+};
+
+DrawDiagCounters g_draw_diag;
+
 const char* kBlitHlsl = R"(
 cbuffer B : register(b1) { float4 uvrect; float4 opts; };
 Texture2D img : register(t0);
@@ -3918,7 +3931,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         const VertexBuffer& b = a.buffers[i];
         Alloc v = Upload(std::max<uint32_t>(b.bytes, 4), 16);
         if (!v.cpu) return;
-        if (b.src && b.bytes) std::memcpy(v.cpu, b.src, b.bytes);
+        if (b.src && b.bytes) {
+            std::memcpy(v.cpu, b.src, b.bytes);
+            if (diag::Perf()) g_draw_diag.vertex_bytes += b.bytes;
+        }
         vbufs[i] = v.buf;
         voffs[i] = v.off;
     }
@@ -3928,6 +3944,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
         ib = Upload(ibytes, 4);
         if (!ib.cpu) return;
         std::memcpy(ib.cpu, a.index_src, ibytes);
+        if (diag::Perf()) g_draw_diag.index_bytes += ibytes;
     }
     bool clamp = AnyStageWraps(s) && UnitTexcoords(a);
     VkSampler samplers[4];
@@ -3938,6 +3955,10 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     BeginRender(draw_rt_ ? &draw_rt_->img : nullptr, draw_ds_ ? &draw_ds_->img : nullptr, "GAME_DRAW");
     if (draw_rt_) draw_rt_->drawn = true, draw_rt_->writes++;
     if (draw_ds_) draw_ds_->drawn = true;
+    if (diag::Perf()) {
+        g_draw_diag.pipeline_binds++;
+        g_draw_diag.bindset_calls++;
+    }
     vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     BindSet(set, vc.off, dc.off);
     Target& bt = draw_rt_ ? *draw_rt_ : *draw_ds_;
@@ -3965,11 +3986,19 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     Color(SimpleState(s, kMBlendColor), bf);
     vkCmdSetBlendConstants(Cb(), bf);
     vkCmdSetStencilReference(Cb(), VK_STENCIL_FACE_FRONT_AND_BACK, SimpleState(s, kMStencilRef) & 0xFF);
-    if (a.buffer_count) vkCmdBindVertexBuffers(Cb(), 0, a.buffer_count, vbufs, voffs);
+    if (a.buffer_count) {
+        if (diag::Perf()) g_draw_diag.vertex_buffer_binds++;
+        vkCmdBindVertexBuffers(Cb(), 0, a.buffer_count, vbufs, voffs);
+    }
     if (a.index_count) {
+        if (diag::Perf()) {
+            g_draw_diag.index_buffer_binds++;
+            g_draw_diag.indexed++;
+        }
         vkCmdBindIndexBuffer(Cb(), ib.buf, ib.off, a.index16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(Cb(), a.index_count, 1, 0, a.base_vertex, 0);
     } else {
+        if (diag::Perf()) g_draw_diag.nonindexed++;
         vkCmdDraw(Cb(), a.draw_count, 1, 0, 0);
     }
 }
@@ -4616,7 +4645,22 @@ void VulkanBackend::Present(const Surface& front) {
         fps_t_ = now;
         if (time_bits_) g_gpu_load = float(std::min(100.0, gpu_ns_ / (el * 1e7)));
         gpu_ns_ = 0;
+
+        if (diag::Perf()) {
+            LOGR("drawdiag: window=%.3fs indexed=%llu nonindexed=%llu vertex_bytes=%llu index_bytes=%llu pipeline_binds=%llu bindset_calls=%llu vertex_buffer_binds=%llu index_buffer_binds=%llu",
+                 el,
+                 (unsigned long long)g_draw_diag.indexed,
+                 (unsigned long long)g_draw_diag.nonindexed,
+                 (unsigned long long)g_draw_diag.vertex_bytes,
+                 (unsigned long long)g_draw_diag.index_bytes,
+                 (unsigned long long)g_draw_diag.pipeline_binds,
+                 (unsigned long long)g_draw_diag.bindset_calls,
+                 (unsigned long long)g_draw_diag.vertex_buffer_binds,
+                 (unsigned long long)g_draw_diag.index_buffer_binds);
+            g_draw_diag = {};
+        }
     }
+
     if (presents_ % 600 == 0) SavePipelineCache();
     if (!preload_started_ && game::Opt().shader_preload) StartPreload();
     ApplySettings();
