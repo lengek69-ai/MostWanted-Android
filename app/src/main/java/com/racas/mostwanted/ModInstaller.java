@@ -31,6 +31,7 @@ import java.util.function.Consumer;
 final class ModInstaller {
     private static final String ZDIR = "NFS/ZDIR.BIN", LIST = "cars.txt", TYPES = "car_types.txt", REMOVED = "cars_removed.txt";
     private static final String GARAGE = "garage", INFO = "info.txt", GEOMETRY = "geometry.bin", TEXTURES = "textures.bin";
+    private static final String VINYLS = "vinyls.bin", PREVINYL = "previnyl.bin";
     private static final String SCRIPT = "script.nfsms", LOGO = "logo.dxt";
 
     private ModInstaller() {}
@@ -83,6 +84,8 @@ final class ModInstaller {
                 k.logoFormat = Integer.parseInt(l.get(5));
                 k.geometry = new File(d, GEOMETRY);
                 k.textures = new File(d, TEXTURES);
+                k.vinyls = new File(d, VINYLS);
+                k.previnyls = new File(d, PREVINYL);
                 File script = new File(d, SCRIPT), logo = new File(d, LOGO);
                 if (script.exists()) k.script = Files.readAllBytes(script.toPath());
                 if (logo.exists()) k.logo = Files.readAllBytes(logo.toPath());
@@ -167,10 +170,14 @@ final class ModInstaller {
         new File(dir, INFO).delete();  // not a car until it is whole
         new File(dir, SCRIPT).delete();
         new File(dir, LOGO).delete();
+        new File(dir, VINYLS).delete();
+        new File(dir, PREVINYL).delete();
         write(new File(dir, GEOMETRY), pack.geometry);
         write(new File(dir, TEXTURES), pack.textures);
         if (pack.script != null) write(new File(dir, SCRIPT), pack.script);
         if (pack.logo != null) write(new File(dir, LOGO), pack.logo);
+        if (pack.vinyls != null) write(new File(dir, VINYLS), pack.vinyls);
+        if (pack.previnyls != null) write(new File(dir, PREVINYL), pack.previnyls);
         write(new File(dir, INFO), (pack.car + "\n" + pack.title + "\n" + pack.manufacturer + "\n" + pack.logoWidth + "\n"
                 + pack.logoHeight + "\n" + pack.logoFormat + "\n").getBytes(StandardCharsets.UTF_8));
     }
@@ -195,7 +202,7 @@ final class ModInstaller {
 
     // what the garage's cars were last built with. A converter fix that kept cars need too bumps it (2: reflection flags by
     // shader, fitGeometry), and the Mods Loader offers to build them again once
-    static final int BUILD = 3;
+    static final int BUILD = 4;
     private static final String BUILT = ".built";
 
     static boolean outdated() {
