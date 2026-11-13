@@ -1295,7 +1295,7 @@ private:
     void PollFences();
     bool ResetFrame(Frame& f);
     void Transition(Image& im, VkImageLayout to);
-    void BeginRender(Image* color, Image* depth);
+    void BeginRender(Image* color, Image* depth, const char* kind);
     void EndRender();
     void FlushClear(Image& im);
     // without dynamic rendering: render passes that only load and store, and framebuffers per pair of views
@@ -2409,14 +2409,14 @@ void VulkanBackend::Transition(Image& im, VkImageLayout to) {
 
 // a clear left on the image, in a rendering of its own
 void VulkanBackend::FlushClear(Image& im) {
-    if (im.depth) BeginRender(nullptr, &im);
-    else BeginRender(&im, nullptr);
+    if (im.depth) BeginRender(nullptr, &im, "CLEAR");
+    else BeginRender(&im, nullptr, "CLEAR");
     EndRender();
 }
 
 // a rendering over the whole of the attachments, which keep what they hold or load a clear left on them; the one under
 // way carries on when it has the same ones
-void VulkanBackend::BeginRender(Image* color, Image* depth) {
+void VulkanBackend::BeginRender(Image* color, Image* depth, const char* kind) {
     if (rendering_ && color == rend_color_ && depth == rend_depth_) return;
     EndRender();
     // the area is the target's: a depth larger than it is cleared whole on its own
@@ -2441,9 +2441,8 @@ void VulkanBackend::BeginRender(Image* color, Image* depth) {
         Image* any = color ? color : depth;
         g_perf.pass_px += uint64_t(any->w) * any->h * ((color ? 1 : 0) + (depth ? 1 : 0));
         if (pass_log_ && pass_times_ && pass_stamps_ < kPassStamps - 1) {
-            char line[64];
-            std::snprintf(line, sizeof(line), "%s%s", color ? "c" : "", depth ? "d" : "");
-            std::snprintf(line + std::strlen(line), sizeof(line) - std::strlen(line), " %ux%u", any->w, any->h);
+            char line[96];
+            std::snprintf(line, sizeof(line), "%s %s%s %ux%u", kind, color ? "c" : "", depth ? "d" : "", any->w, any->h);
             pass_list_.push_back(line);
             vkCmdWriteTimestamp(Cb(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_times_, pass_stamps_++);
         }
@@ -3242,7 +3241,7 @@ void VulkanBackend::Blit(Image& dst, const VkRect2D& to, Image& src, const float
     const VkImageView views[4] = {src.view, lut_.view, VK_NULL_HANDLE, VK_NULL_HANDLE};
     const VkSampler samplers[4] = {linear_, point_, point_, point_};
     VkDescriptorSet set = Set(views, samplers);
-    BeginRender(&dst, nullptr);
+    BeginRender(&dst, nullptr, "BLIT");
     vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     BindSet(set, cb.off, cb.off);
     SetViewport(float(to.offset.x), float(to.offset.y), float(to.extent.width), float(to.extent.height));
@@ -3284,7 +3283,7 @@ bool VulkanBackend::DepthCopy(const State& s) {
     const VkImageView views[4] = {src.img.view, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     const VkSampler samplers[4] = {linear_, point_, point_, point_};
     VkDescriptorSet set = Set(views, samplers);
-    BeginRender(nullptr, &dst.img);
+    BeginRender(nullptr, &dst.img, "DEPTH_COPY");
     vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     BindSet(set, cb.off, cb.off);
     SetViewport(0, 0, float(dst.w), float(dst.h));
@@ -3936,7 +3935,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     VkDescriptorSet set = Set(stages.view, samplers);
 
     // the rendering
-    BeginRender(draw_rt_ ? &draw_rt_->img : nullptr, draw_ds_ ? &draw_ds_->img : nullptr);
+    BeginRender(draw_rt_ ? &draw_rt_->img : nullptr, draw_ds_ ? &draw_ds_->img : nullptr, "GAME_DRAW");
     if (draw_rt_) draw_rt_->drawn = true, draw_rt_->writes++;
     if (draw_ds_) draw_ds_->drawn = true;
     vkCmdBindPipeline(Cb(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -4033,8 +4032,8 @@ void VulkanBackend::ClearTarget(Target& t, const State& s, uint32_t count, const
             t.img.pending |= ca.aspectMask;
             return;
         }
-        if (t.depth) BeginRender(nullptr, &t.img);
-        else BeginRender(&t.img, nullptr);
+        if (t.depth) BeginRender(nullptr, &t.img, "CLEAR");
+        else BeginRender(&t.img, nullptr, "CLEAR");
     }
     vkCmdClearAttachments(Cb(), 1, &ca, uint32_t(rs.size()), rs.data());
 }
