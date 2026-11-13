@@ -85,8 +85,9 @@ final class CarConverter {
     }
 
     private static final Pattern WANTED = Pattern.compile(
-            "(.*/)?([^/]+/(geometry|textures)\\.bin|cartypeinfo[^/]*\\.bin|[^/]*\\.nfsms|[^/]*\\.end"
-            + "|secondary_logo_[^/]*\\.dds)");
+            "(.*/)?([^/]+/(geometry|textures)\\.bin|cartypeinfo[^/]*\\.bin|"
+            + "(dbmodelparts|parts|car|vinyls|previnyl)\\.bin|[^/]*\\.nfsms|[^/]*\\.end"
+            + "|[^/]*\\.ini|secondary_logo_[^/]*\\.dds)");
 
     // an archive's files worth keeping for convert, its paths with / in them
     static boolean wanted(String path) {
@@ -2625,7 +2626,12 @@ final class CarConverter {
     static Map<String, byte[]> carFiles(Map<String, File> files, String geoPath) throws IOException {
         Matcher binary = BINARY_ROOT.matcher(geoPath);
         Matcher geo = geoMatch(geoPath);
-        String root = binary.matches() ? binary.group(1) : geo == null || geo.group(1) == null ? "" : geo.group(1);
+        // A single-car archive is one installer package, not just the directory containing GEOMETRY.BIN.
+        // Binary commonly puts CAR.bin, PARTS.bin, the VLT script, logos and Unlimiter data in sibling folders.
+        // Keep the whole package in that case; multi-car archives remain isolated by their car roots below.
+        boolean singleCarPackage = carPaths(files.keySet()).size() == 1;
+        String root = singleCarPackage ? "" : binary.matches() ? binary.group(1)
+                : geo == null || geo.group(1) == null ? "" : geo.group(1);
         List<String> folders = new ArrayList<>();
         for (String other : carPaths(files.keySet()))
             if (!other.equals(geoPath)) folders.add(other.substring(0, other.length() - "GEOMETRY.BIN".length()));
@@ -2638,7 +2644,42 @@ final class CarConverter {
         return out;
     }
 
-    // the VltEd script for a car: named for it, else the install script, else the only one there is
+    // Resolve Binary/VltEd UI wrappers: their "script path" line points to the actual install data.
+    // Paths in these directives are relative to the wrapper, and archives may use either slash.
+    private static String scriptTarget(Map<String, byte[]> mod, String from, Set<String> seen, int depth) {
+        if (depth > 4 || !seen.add(from)) return from;
+        byte[] bytes = mod.get(from);
+        if (bytes == null) return from;
+        Matcher directive = Pattern.compile("(?im)^\\s*script\\s+([^\\s]+)\\s*$")
+                .matcher(latin(bytes, 0, bytes.length));
+        if (!directive.find()) return from;
+        String target = directive.group(1).replace('\\', '/');
+        String parent = from.contains("/") ? from.substring(0, from.lastIndexOf('/') + 1) : "";
+        List<String> candidates = new ArrayList<>();
+        candidates.add(target);
+        candidates.add(parent + target);
+        for (String candidate : candidates) {
+            String normalized = normalizeArchivePath(candidate);
+            for (String key : mod.keySet())
+                if (key.equalsIgnoreCase(normalized))
+                    return scriptTarget(mod, key, seen, depth + 1);
+        }
+        return from;
+    }
+
+    private static String normalizeArchivePath(String path) {
+        List<String> parts = new ArrayList<>();
+        for (String part : path.replace('\\', '/').split("/")) {
+            if (part.isEmpty() || part.equals(".")) continue;
+            if (part.equals("..")) {
+                if (!parts.isEmpty()) parts.remove(parts.size() - 1);
+            } else parts.add(part);
+        }
+        return String.join("/", parts);
+    }
+
+    // the VltEd script for a car: prefer a car-named wrapper, then an install script, then the only one.
+    // If that file is a UI wrapper, follow its script directive before handing bytes to the VLT parser.
     private static String findScript(Map<String, byte[]> mod, String car) {
         Pattern p = Pattern.compile("(?:.*/)?([^/]*\\.nfsms)", Pattern.CASE_INSENSITIVE);
         List<String> scripts = new ArrayList<>();
@@ -2648,11 +2689,14 @@ final class CarConverter {
         }
         scripts.sort(null);
         String named = car.toLowerCase(Locale.ROOT);
+        String selected = null;
         for (String k : scripts)
-            if (k.substring(k.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT).contains(named)) return k;
-        for (String k : scripts)
-            if (k.substring(k.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT).contains("install")) return k;
-        return scripts.size() == 1 ? scripts.get(0) : null;
+            if (k.substring(k.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT).contains(named)) { selected = k; break; }
+        if (selected == null)
+            for (String k : scripts)
+                if (k.substring(k.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT).contains("install")) { selected = k; break; }
+        if (selected == null && scripts.size() == 1) selected = scripts.get(0);
+        return selected == null ? null : scriptTarget(mod, selected, new HashSet<>(), 0);
     }
 
     // mod: one car's files by their paths in the archive, with / in them (carFiles)
