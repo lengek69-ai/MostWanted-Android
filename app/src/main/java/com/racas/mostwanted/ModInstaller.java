@@ -84,8 +84,9 @@ final class ModInstaller {
                 k.logoFormat = Integer.parseInt(l.get(5));
                 k.geometry = new File(d, GEOMETRY);
                 k.textures = new File(d, TEXTURES);
-                k.vinyls = new File(d, VINYLS);
-                k.previnyls = new File(d, PREVINYL);
+                File vinyls = new File(d, VINYLS), previnyls = new File(d, PREVINYL);
+                k.vinyls = vinyls.isFile() ? vinyls : null;
+                k.previnyls = previnyls.isFile() ? previnyls : null;
                 File script = new File(d, SCRIPT), logo = new File(d, LOGO);
                 if (script.exists()) k.script = Files.readAllBytes(script.toPath());
                 if (logo.exists()) k.logo = Files.readAllBytes(logo.toPath());
