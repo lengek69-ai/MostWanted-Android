@@ -73,6 +73,14 @@ uint64_t SinceNs(std::chrono::steady_clock::time_point t) {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count());
 }
 
+struct PassWorkCounters {
+    uint64_t draws = 0;
+    uint64_t indexed = 0;
+    uint64_t nonindexed = 0;
+    uint64_t vertex_bytes = 0;
+    uint64_t index_bytes = 0;
+};
+
 struct DrawDiagCounters {
     uint64_t indexed = 0;
     uint64_t nonindexed = 0;
@@ -1544,6 +1552,8 @@ private:
     double gpu_ns_ = 0;       // GPU time of the command buffers done since the load was last worked out
     bool pass_log_ = false;   // perf diagnostic: this frame's renderings are listed, with their GPU time
     std::vector<std::string> pass_list_;
+    std::vector<PassWorkCounters> pass_work_;
+    bool pass_work_active_ = false;
     VkQueryPool pass_times_ = VK_NULL_HANDLE;
     uint32_t pass_stamps_ = 0;
 };
@@ -2514,7 +2524,11 @@ void VulkanBackend::BeginRender(Image* color, Image* depth, const char* kind) {
             char line[96];
             std::snprintf(line, sizeof(line), "%s %s%s %ux%u", kind, color ? "c" : "", depth ? "d" : "", any->w, any->h);
             pass_list_.push_back(line);
+            pass_work_.push_back({});
+            pass_work_active_ = true;
             vkCmdWriteTimestamp(Cb(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pass_times_, pass_stamps_++);
+        } else {
+            pass_work_active_ = false;
         }
     }
     if (!dynamic_) {
@@ -3999,12 +4013,14 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     if (!dc.cpu) return;
     VkBuffer vbufs[16];
     VkDeviceSize voffs[16];
+    uint64_t draw_vertex_bytes = 0, draw_index_bytes = 0;
     for (uint32_t i = 0; i < a.buffer_count; i++) {
         const VertexBuffer& b = a.buffers[i];
         Alloc v = Upload(std::max<uint32_t>(b.bytes, 4), 16);
         if (!v.cpu) return;
         if (b.src && b.bytes) {
             std::memcpy(v.cpu, b.src, b.bytes);
+            draw_vertex_bytes += b.bytes;
             if (diag::Perf()) g_draw_diag.vertex_bytes += b.bytes;
         }
         vbufs[i] = v.buf;
@@ -4013,6 +4029,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     Alloc ib{};
     if (a.index_count) {
         uint32_t ibytes = a.index_count * (a.index16 ? 2 : 4);
+        draw_index_bytes = ibytes;
         ib = Upload(ibytes, 4);
         if (!ib.cpu) return;
         std::memcpy(ib.cpu, a.index_src, ibytes);
@@ -4025,6 +4042,14 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
 
     // the rendering
     BeginRender(draw_rt_ ? &draw_rt_->img : nullptr, draw_ds_ ? &draw_ds_->img : nullptr, "GAME_DRAW");
+    if (pass_log_ && pass_work_active_ && !pass_work_.empty()) {
+        PassWorkCounters& work = pass_work_.back();
+        work.draws++;
+        if (a.index_count) work.indexed++;
+        else work.nonindexed++;
+        work.vertex_bytes += draw_vertex_bytes;
+        work.index_bytes += draw_index_bytes;
+    }
     if (draw_rt_) draw_rt_->drawn = true, draw_rt_->writes++;
     if (draw_ds_) draw_ds_->drawn = true;
     if (diag::Perf()) {
@@ -4659,7 +4684,17 @@ void VulkanBackend::Present(const Surface& front) {
             for (size_t i = 0; i < pass_list_.size() && i + 1 < t.size(); i++) {
                 char ms[32];
                 std::snprintf(ms, sizeof(ms), " %.2f", double((t[i + 1] - t[i]) & mask) * props_.limits.timestampPeriod / 1e6);
-                out += " [" + pass_list_[i] + ms + "]";
+                out += " [" + pass_list_[i] + ms;
+                if (i < pass_work_.size() && pass_list_[i].rfind("GAME_DRAW", 0) == 0) {
+                    const PassWorkCounters& work = pass_work_[i];
+                    char detail[144];
+                    std::snprintf(detail, sizeof(detail), " draws=%llu indexed=%llu vtx=%lluKB idx=%lluKB",
+                                  (unsigned long long)work.draws, (unsigned long long)work.indexed,
+                                  (unsigned long long)(work.vertex_bytes / 1024),
+                                  (unsigned long long)(work.index_bytes / 1024));
+                    out += detail;
+                }
+                out += "]";
             }
         }
         LOGR("perf: frame %llu renderings (GPU ms to the next):%s", (unsigned long long)presents_, out.c_str());
@@ -4676,6 +4711,8 @@ void VulkanBackend::Present(const Surface& front) {
         if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost_ = true;
     }
     pass_list_.clear();
+    pass_work_.clear();
+    pass_work_active_ = false;
     pass_stamps_ = 0;
     pass_log_ = diag::Perf() && time_bits_ && presents_ % 600 == 599;
     presents_++;
