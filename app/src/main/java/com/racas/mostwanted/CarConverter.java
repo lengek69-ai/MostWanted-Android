@@ -2165,7 +2165,8 @@ final class CarConverter {
                 at = m;
                 if (member.equals("Collection") || member.equals("Class") || member.equals("CollectionKey") || member.equals("ClassKey"))
                     raw = ints(attribKey(text));
-                else raw = packScalar(text, "Int", 4);
+                else if (member.equals("UpgradeLevel") || member.equals("Level")) raw = packScalar(text, "Int", 4);
+                else raw = packFloat(text);
             } else {
                 String type = typeNames.get(p.def[0]);
                 raw = packScalar(text, type == null ? "" : type, p.def[2]);
