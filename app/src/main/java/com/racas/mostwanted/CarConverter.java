@@ -67,14 +67,14 @@ final class CarConverter {
     // one car, converted; its big files are on the storage once kept
     static final class Package {
         String car, title, manufacturer;
-        byte[] geometry, textures, script, logo, vinyls, previnyls;  // optional package files
+        byte[] geometry, textures, script, logo, vinyls, previnyls, carInfo, parts, unlimiterIni;  // optional package files
         int logoWidth, logoHeight, logoFormat;
     }
 
     // a kept car for build: its two big files by path
     static final class Kept {
         String car, title, manufacturer;
-        File geometry, textures, vinyls, previnyls;
+        File geometry, textures, vinyls, previnyls, carInfo, parts, unlimiterIni;
         byte[] script, logo;
         int logoWidth, logoHeight, logoFormat;
     }
@@ -2577,7 +2577,7 @@ final class CarConverter {
 
     // what is added to a chunk is a multiple of 0x80, to keep the alignment of what follows it (textures, on 0x80). From the
     // file's end to its start, so the offsets stay good
-    private static byte[] patchGlobal(byte[] gIn, List<Kept> cars, Consumer<String> log) throws Failure {
+    private static byte[] patchGlobal(byte[] gIn, List<Kept> cars, Consumer<String> log) throws Failure, IOException {
         byte[] g = gIn;
         Map<Integer, int[]> sub = new HashMap<>();
         int[] types = null, partsChunk = null, collisions = null;
@@ -2593,6 +2593,19 @@ final class CarConverter {
         if (types == null || partsChunk == null || collisions == null || gallardo < 0 || !sub.containsKey(0x3460B)
                 || !sub.containsKey(0x34604) || !sub.containsKey(0x34603))
             throw new Failure(Failure.Reason.UNSUPPORTED, "not the game's car tables");
+
+        // Use Unlimiter's own collection where present; keep the template for legacy packages.
+        List<Kept> templateCars = new ArrayList<>();
+        Buf unlimiterParts = new Buf();
+        for (Kept car : cars) {
+            if (car.parts != null && car.parts.isFile()) {
+                unlimiterParts.add(UnlimiterDatabase.partsBlock(Files.readAllBytes(car.parts.toPath()), car.car));
+                log.accept(car.car + ": imported Unlimiter PARTS.bin");
+            } else {
+                templateCars.add(car);
+                log.accept(car.car + ": no PARTS.bin; using " + TEMPLATE_PARTS + " fallback");
+            }
+        }
 
         // a collision of its own for each, the Gallardo's
         int s = collisions[1], o = collisions[2], cid = 0;
@@ -2617,34 +2630,36 @@ final class CarConverter {
         g = insert(g, end, added.bytes());
         put32(g, o - 4, s + added.n);
 
-        // the template's parts again for each, under a new index in the parts' car table
-        int[] tab = sub.get(0x3460B), parts = sub.get(0x34604), head = sub.get(0x34603);
-        int carCount = tab[1] / 4, rows = parts[1] / 14, template = -1;
-        for (int i = 0; i < carCount; i++)
-            if (i32(g, tab[2] + i * 4) == bhash(TEMPLATE_PARTS)) template = i;
-        if (template < 0) throw new Failure(Failure.Reason.UNSUPPORTED, "no " + TEMPLATE_PARTS + " in the parts' car table");
-        if (carCount + cars.size() > 255) throw new Failure(Failure.Reason.UNSUPPORTED, "too many cars for the parts' table");
-        Buf run = new Buf();
-        for (int i = 0; i < rows; i++)
-            if ((g[parts[2] + i * 14 + 7] & 255) == template) run.add(g, parts[2] + i * 14, 14);
-        byte[] one = run.bytes();
-        hideExtraParts(g, sub, one, log);
-        Buf newRows = new Buf(), newHashes = new Buf();
-        for (int i = 0; i < cars.size(); i++) {
-            byte[] mine = one.clone();
-            for (int r = 0; r < mine.length; r += 14) mine[r + 7] = (byte) (carCount + i);
-            newRows.add(mine);
-            newHashes.add(ints(bhash(cars.get(i).car)));
+        // Clone template rows only for packages that do not include Unlimiter PARTS.bin.
+        if (!templateCars.isEmpty()) {
+            int[] tab = sub.get(0x3460B), parts = sub.get(0x34604), head = sub.get(0x34603);
+            int carCount = tab[1] / 4, rows = parts[1] / 14, template = -1;
+            for (int i = 0; i < carCount; i++)
+                if (i32(g, tab[2] + i * 4) == bhash(TEMPLATE_PARTS)) template = i;
+            if (template < 0) throw new Failure(Failure.Reason.UNSUPPORTED, "no " + TEMPLATE_PARTS + " in the parts' car table");
+            if (carCount + templateCars.size() > 255) throw new Failure(Failure.Reason.UNSUPPORTED, "too many template-fallback cars for the parts' table");
+            Buf run = new Buf();
+            for (int i = 0; i < rows; i++)
+                if ((g[parts[2] + i * 14 + 7] & 255) == template) run.add(g, parts[2] + i * 14, 14);
+            byte[] one = run.bytes();
+            hideExtraParts(g, sub, one, log);
+            Buf newRows = new Buf(), newHashes = new Buf();
+            for (int i = 0; i < templateCars.size(); i++) {
+                byte[] mine = one.clone();
+                for (int r = 0; r < mine.length; r += 14) mine[r + 7] = (byte) (carCount + i);
+                newRows.add(mine);
+                newHashes.add(ints(bhash(templateCars.get(i).car)));
+            }
+            int grown = newRows.n + newHashes.n, pad = align(grown, 0x80) - grown;
+            newRows.zeros(pad);
+            g = insert(g, parts[2] + rows * 14, newRows.bytes());
+            put32(g, parts[2] - 4, parts[1] + newRows.n);
+            g = insert(g, tab[2] + tab[1], newHashes.bytes());
+            put32(g, tab[2] - 4, tab[1] + newHashes.n);
+            put32(g, partsChunk[2] - 4, partsChunk[1] + newRows.n + newHashes.n);
+            put32(g, head[2] + 0x28, carCount + templateCars.size());
+            put32(g, head[2] + 0x38, rows + templateCars.size() * (one.length / 14));
         }
-        int grown = newRows.n + newHashes.n, pad = align(grown, 0x80) - grown;
-        newRows.zeros(pad);
-        g = insert(g, parts[2] + rows * 14, newRows.bytes());
-        put32(g, parts[2] - 4, parts[1] + newRows.n);
-        g = insert(g, tab[2] + tab[1], newHashes.bytes());
-        put32(g, tab[2] - 4, tab[1] + newHashes.n);
-        put32(g, partsChunk[2] - 4, partsChunk[1] + newRows.n + newHashes.n);
-        put32(g, head[2] + 0x28, carCount + cars.size());
-        put32(g, head[2] + 0x38, rows + cars.size() * (one.length / 14));
 
         // the car types: an empty one for 84, the "no car" answer, then the add-ons
         int rowsAt = types[2] + 8;
@@ -2655,18 +2670,28 @@ final class CarConverter {
         newTypes.add(none);
         for (int i = 0; i < cars.size(); i++) {
             Kept car = cars.get(i);
-            byte[] r = rec.clone();
-            System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0, 16);
-            System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0x10, 16);
-            System.arraycopy(Arrays.copyOf(latin("CARS\\" + car.car + "\\GEOMETRY.BIN"), 32), 0, r, 0x20, 32);
-            System.arraycopy(Arrays.copyOf(latin(car.manufacturer), 16), 0, r, 0x40, 16);
-            put32(r, 0x50, bhash(car.car));
-            put32(r, 0x90, FIRST_ADDON_TYPE + i);
+            byte[] r;
+            if (car.carInfo != null && car.carInfo.isFile()) {
+                r = UnlimiterDatabase.carTypeRecord(Files.readAllBytes(car.carInfo.toPath()), car.car, FIRST_ADDON_TYPE + i, car.manufacturer);
+                log.accept(car.car + ": imported Unlimiter CAR.bin");
+            } else {
+                r = rec.clone();
+                System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0, 16);
+                System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0x10, 16);
+                System.arraycopy(Arrays.copyOf(latin("CARS\\" + car.car + "\\GEOMETRY.BIN"), 32), 0, r, 0x20, 32);
+                System.arraycopy(Arrays.copyOf(latin(car.manufacturer), 16), 0, r, 0x40, 16);
+                put32(r, 0x50, bhash(car.car));
+                put32(r, 0x90, FIRST_ADDON_TYPE + i);
+            }
             newTypes.add(r);
         }
         newTypes.zeros(align(newTypes.n, 0x80) - newTypes.n);
         g = insert(g, types[2] + types[1], newTypes.bytes());
         put32(g, types[2] - 4, types[1] + newTypes.n);
+        if (unlimiterParts.n > 0) {
+            g = cat(g, unlimiterParts.bytes());
+            log.accept("GLOBALB: appended " + (unlimiterParts.n / 0x80) + " aligned Unlimiter DBCarParts blocks");
+        }
         return g;
     }
 
@@ -2892,6 +2917,14 @@ final class CarConverter {
         if (car.equals(TEMPLATE_PARTS)) throw new Failure(Failure.Reason.UNSUPPORTED, "a car named " + car);
         Package pack = new Package();
         pack.car = car;
+        for (Map.Entry<String, byte[]> entry : mod.entrySet()) {
+            String normalized = entry.getKey().replace('\\', '/').toLowerCase(Locale.ROOT);
+            String base = normalized.substring(normalized.lastIndexOf('/') + 1);
+            if (base.equals("car.bin") && pack.carInfo == null) pack.carInfo = entry.getValue();
+            else if ((base.equals("parts.bin") || base.equals("dbmodelparts.bin")) && pack.parts == null) pack.parts = entry.getValue();
+            else if (base.equals(car.toLowerCase(Locale.ROOT) + ".ini") && normalized.contains("unlimiterdata") && pack.unlimiterIni == null)
+                pack.unlimiterIni = entry.getValue();
+        }
         byte[] mg = mod.get(geoPath), mt = null;
         String want = geoPath.substring(0, geoPath.length() - "GEOMETRY.BIN".length()) + "TEXTURES.BIN";
         for (String k : mod.keySet())
@@ -2921,6 +2954,10 @@ final class CarConverter {
             Matcher m = Pattern.compile(Pattern.quote(car) + "\0([A-Z0-9 ]+)\0").matcher(latin(raw, 0, raw.length));
             if (m.find()) pack.manufacturer = m.group(1);
         }
+        if (pack.carInfo != null) {
+            try { pack.manufacturer = UnlimiterDatabase.carManufacturer(pack.carInfo, car); }
+            catch (IOException e) { throw new Failure(Failure.Reason.UNSUPPORTED, "CAR.bin: " + e.getMessage()); }
+        }
         String script = findScript(mod, car);
         if (script != null) pack.script = mod.get(script);
         String carRoot = geoPath.substring(0, geoPath.length() - "GEOMETRY.BIN".length());
@@ -2929,6 +2966,9 @@ final class CarConverter {
             else if (k.equalsIgnoreCase(carRoot + "PREVINYL.BIN")) pack.previnyls = mod.get(k);
         }
         log.accept("package: script " + (pack.script == null ? "none" : pack.script.length + " bytes")
+                + ", CAR.bin " + (pack.carInfo == null ? "fallback" : pack.carInfo.length + " bytes")
+                + ", PARTS.bin " + (pack.parts == null ? "template fallback" : pack.parts.length + " bytes")
+                + ", Unlimiter INI " + (pack.unlimiterIni == null ? "none" : pack.unlimiterIni.length + " bytes")
                 + ", VINYLS " + (pack.vinyls == null ? "fallback" : pack.vinyls.length + " bytes")
                 + ", PREVINYL " + (pack.previnyls == null ? "fallback" : pack.previnyls.length + " bytes"));
         pack.title = titleCase(car);
