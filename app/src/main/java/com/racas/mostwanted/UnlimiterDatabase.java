@@ -10,6 +10,27 @@ final class UnlimiterDatabase {
     private static final int NIKKI=0x42704D67, GAME=2, CAR_TYPES=0x579512F6, MODEL_PARTS=0x768C36C0;
     private UnlimiterDatabase() {}
 
+    static byte[] managerPadding(int offset) {
+        int difference = 0x10 - (offset % 0x10) + 0x0C;
+        int size = difference + 0x50;
+        Out o = new Out();
+        o.i32(0);
+        o.i32(size - 8);
+        o.i32(0x42704D67);
+        o.i32(0);
+        fixedBlockString(o, "Padding Block", 0x20);
+        fixedBlockString(o, "MostWanted Android", 0x20);
+        if (o.size() > size) throw new IllegalStateException("padding block overflow");
+        o.zeros(size - o.size());
+        return o.bytes();
+    }
+
+    private static void fixedBlockString(Out o,String s,int n) {
+        byte[] b=(s==null?"":s).getBytes(StandardCharsets.UTF_8);
+        o.bytes(Arrays.copyOf(b,Math.min(b.length,n-1)));
+        o.zeros(n-Math.min(b.length,n-1));
+    }
+
     static String carManufacturer(byte[] file,String car)throws IOException{
         Cursor c=new Cursor(raw(file,CAR_TYPES)); String name=c.str(),make=c.str();
         if(!name.equalsIgnoreCase(car))throw new IOException("CAR.bin belongs to "+name+", not "+car);

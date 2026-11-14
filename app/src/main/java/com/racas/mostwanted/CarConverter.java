@@ -2596,7 +2596,7 @@ final class CarConverter {
 
         // Use Unlimiter's own collection where present; keep the template for legacy packages.
         List<Kept> templateCars = new ArrayList<>();
-        Buf unlimiterParts = new Buf();
+        List<byte[]> unlimiterParts = new ArrayList<>();
         for (Kept car : cars) {
             if (car.parts != null && car.parts.isFile()) {
                 unlimiterParts.add(UnlimiterDatabase.partsBlock(Files.readAllBytes(car.parts.toPath()), car.car));
@@ -2688,9 +2688,15 @@ final class CarConverter {
         newTypes.zeros(align(newTypes.n, 0x80) - newTypes.n);
         g = insert(g, types[2] + types[1], newTypes.bytes());
         put32(g, types[2] - 4, types[1] + newTypes.n);
-        if (unlimiterParts.n > 0) {
-            g = cat(g, unlimiterParts.bytes());
-            log.accept("GLOBALB: appended " + (unlimiterParts.n / 0x80) + " aligned Unlimiter DBCarParts blocks");
+        if (!unlimiterParts.isEmpty()) {
+            int total = 0;
+            for (byte[] block : unlimiterParts) {
+                byte[] padding = UnlimiterDatabase.managerPadding(g.length);
+                g = cat(g, padding);
+                g = cat(g, block);
+                total += block.length;
+            }
+            log.accept("GLOBALB: appended " + unlimiterParts.size() + " Unlimiter DBCarParts roots (" + total + " bytes)");
         }
         return g;
     }
