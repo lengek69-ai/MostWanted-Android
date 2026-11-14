@@ -2601,7 +2601,7 @@ final class CarConverter {
         for (Kept car : cars) {
             if (car.parts != null && car.parts.isFile()) {
                 try {
-                    byte[] generated = UnlimiterDatabase.partsBlock(readAll(car.parts), car.car);
+                    byte[] generated = UnlimiterDatabase.partsBlock(Files.readAllBytes(car.parts.toPath()), car.car);
                     log.accept(car.car + ": Unlimiter DBModelParts preflight OK (" + generated.length
                             + " byte DBCarParts root); native injection remains disabled, using " + TEMPLATE_PARTS + " fallback");
                 } catch (IOException | RuntimeException e) {
