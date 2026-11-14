@@ -2153,6 +2153,89 @@ final class CarConverter {
             return base + align(8, al) + index * el;
         }
 
+        // Resize a node-owned VLT array. Layout-backed arrays share a fixed class
+        // layout, so they can use existing capacity but cannot be reallocated here.
+        String resizeField(String cls, String node, String field, int size) {
+            if (size < 1 || size > 0xFFFF) return "invalid array size " + size;
+            int c = attribKey(cls), fk = attribKey(field);
+            VltClass vc = classes.get(c);
+            if (vc == null) return "no such class";
+            int[] d = vc.fields.get(fk);
+            if (d == null) return "no such field";
+            if ((d[4] & 1) == 0) return "field is not an array";
+
+            Integer rowAt = colls.get(pair(c, attribKey(node)));
+            if (rowAt == null) return "node missing";
+            byte[] h = read(rowAt + 20, 8);
+            int ne = i32(h, 0), nt = i32(h, 4) & 0xFFFF;
+            int[] pointer = null;
+            boolean layoutArray = (d[4] & 2) != 0;
+            int base = -1;
+            Integer alObj = aligns.get(pair(c, fk));
+            int al = alObj == null ? 4 : alObj;
+
+            if (layoutArray) {
+                int[] layout = allFix(rowAt + 0x1C);
+                if (layout == null) return "node has no layout";
+                base = layout[3] + d[1];
+            } else {
+                int ents = rowAt + 32 + nt * 4;
+                for (int e = 0; e < ne; e++) {
+                    int entry = ents + e * 12;
+                    if (i32(read(entry, 4), 0) != fk) continue;
+                    if ((u16(read(entry + 10, 2), 0) & 0x20) != 0)
+                        return "array is stored inline";
+                    pointer = allFix(entry + 4);
+                    if (pointer == null) return "array has no data pointer";
+                    base = pointer[3];
+                    break;
+                }
+            }
+            if (base < 0) return "not in this node";
+            if ((long) base + 8 > bin.n) return "array header is out of bounds";
+
+            int count = u16(bin.a, base);
+            int capacity = u16(bin.a, base + 2);
+            int elementSize = u16(bin.a, base + 4);
+            if (elementSize <= 0 || count > capacity) return "invalid array header";
+            int dataAt = base + align(8, al);
+            long oldEnd = (long) dataAt + (long) capacity * elementSize;
+            if (oldEnd > bin.n) return "array data is out of bounds";
+
+            if (size <= capacity) {
+                put16(bin.a, base, size);
+                return null;
+            }
+            if (layoutArray) return "layout array capacity is " + capacity;
+            if (pointer == null) return "array has no resizable data pointer";
+
+            long bytes = (long) align(8, al) + (long) size * elementSize;
+            if (bytes > (1L << 20)) return "resized array is too large";
+            int newBase = align(bin.n, 16);
+            int newBytes = (int) bytes;
+            bin.zeros(newBase - bin.n);
+            bin.zeros(newBytes);
+            put16(bin.a, newBase, size);
+            put16(bin.a, newBase + 2, size);
+            put16(bin.a, newBase + 4, elementSize);
+
+            int newDataAt = newBase + align(8, al);
+            int copyCount = Math.min(count, size);
+            int copyBytes = copyCount * elementSize;
+            if (copyBytes > 0) {
+                System.arraycopy(bin.a, dataAt, bin.a, newDataAt, copyBytes);
+                for (int q = dataAt; q < dataAt + copyBytes; q += 4) {
+                    int[] fix = binFix.get(q);
+                    if (fix == null) continue;
+                    int[] moved = {newDataAt + q - dataAt, fix[1], fix[2], fix[3]};
+                    newFixBin.add(moved);
+                    binFix.put(moved[0], moved);
+                }
+            }
+            pointer[3] = newBase;
+            return null;
+        }
+
         // null, or why not
         String setValue(String cls, String node, String field, int index, String member, String text) {
             Place p = fieldPlace(cls, node, field, index);
@@ -2454,7 +2537,16 @@ final class CarConverter {
                 String why = v.setValue(cls, node, name, index, member, text);
                 if (why != null) skipped.merge(cls + "." + name + ": " + why, 1, Integer::sum);
                 else done++;
-            } else if ((op.equals("add_field") || op.equals("resize_field")) && w.length > 3) {
+            } else if (op.equals("resize_field") && w.length >= 5) {
+                try {
+                    int size = Integer.parseInt(w[4]);
+                    String why = v.resizeField(cls, w[2], w[3], size);
+                    if (why != null) skipped.merge("resize_field " + cls + "." + w[3] + ": " + why, 1, Integer::sum);
+                    else done++;
+                } catch (NumberFormatException e) {
+                    skipped.merge("resize_field " + cls + "." + w[3] + ": invalid size", 1, Integer::sum);
+                }
+            } else if (op.equals("add_field") && w.length > 3) {
                 skipped.merge(op + " " + cls + "." + w[3], 1, Integer::sum);
             }
         }
