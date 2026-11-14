@@ -2594,16 +2594,15 @@ final class CarConverter {
                 || !sub.containsKey(0x34604) || !sub.containsKey(0x34603))
             throw new Failure(Failure.Reason.UNSUPPORTED, "not the game's car tables");
 
-        // Use Unlimiter's own collection where present; keep the template for legacy packages.
-        List<Kept> templateCars = new ArrayList<>();
-        List<byte[]> unlimiterParts = new ArrayList<>();
+        // Native Unlimiter collection injection is disabled until the generated DBCarParts
+        // root is verified against the game's loader. Keep the known-good template path.
+        List<Kept> templateCars = new ArrayList<>(cars);
+        List<byte[]> unlimiterParts = Collections.emptyList();
         for (Kept car : cars) {
-            if (car.parts != null && car.parts.isFile()) {
-                unlimiterParts.add(UnlimiterDatabase.partsBlock(Files.readAllBytes(car.parts.toPath()), car.car));
-                log.accept(car.car + ": imported Unlimiter PARTS.bin");
+            if ((car.parts != null && car.parts.isFile()) || (car.carInfo != null && car.carInfo.isFile())) {
+                log.accept(car.car + ": Unlimiter CAR/PARTS data retained but not injected; using " + TEMPLATE_PARTS + " fallback");
             } else {
-                templateCars.add(car);
-                log.accept(car.car + ": no PARTS.bin; using " + TEMPLATE_PARTS + " fallback");
+                log.accept(car.car + ": no Unlimiter CAR/PARTS data; using " + TEMPLATE_PARTS + " fallback");
             }
         }
 
@@ -2671,18 +2670,13 @@ final class CarConverter {
         for (int i = 0; i < cars.size(); i++) {
             Kept car = cars.get(i);
             byte[] r;
-            if (car.carInfo != null && car.carInfo.isFile()) {
-                r = UnlimiterDatabase.carTypeRecord(Files.readAllBytes(car.carInfo.toPath()), car.car, FIRST_ADDON_TYPE + i, car.manufacturer);
-                log.accept(car.car + ": imported Unlimiter CAR.bin");
-            } else {
-                r = rec.clone();
-                System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0, 16);
-                System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0x10, 16);
-                System.arraycopy(Arrays.copyOf(latin("CARS\\" + car.car + "\\GEOMETRY.BIN"), 32), 0, r, 0x20, 32);
-                System.arraycopy(Arrays.copyOf(latin(car.manufacturer), 16), 0, r, 0x40, 16);
-                put32(r, 0x50, bhash(car.car));
-                put32(r, 0x90, FIRST_ADDON_TYPE + i);
-            }
+            r = rec.clone();
+            System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0, 16);
+            System.arraycopy(Arrays.copyOf(latin(car.car), 16), 0, r, 0x10, 16);
+            System.arraycopy(Arrays.copyOf(latin("CARS\\" + car.car + "\\GEOMETRY.BIN"), 32), 0, r, 0x20, 32);
+            System.arraycopy(Arrays.copyOf(latin(car.manufacturer), 16), 0, r, 0x40, 16);
+            put32(r, 0x50, bhash(car.car));
+            put32(r, 0x90, FIRST_ADDON_TYPE + i);
             newTypes.add(r);
         }
         newTypes.zeros(align(newTypes.n, 0x80) - newTypes.n);
