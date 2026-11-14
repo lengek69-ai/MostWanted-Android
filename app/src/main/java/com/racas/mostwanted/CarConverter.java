@@ -2178,41 +2178,67 @@ final class CarConverter {
             return null;
         }
 
-        // MODEL is three StringKeys: Collision64, Collision, Visual.
-        // Each StringKey occupies 16 bytes: lookup8, attribute hash and text pointer.
+        // MODEL is three 16-byte StringKeys: Collision64, Collision, Visual.
+        // Depending on the game's ATTRIBUTES definition, these are either three
+        // elements of an array or three adjacent members of one 48-byte value.
+        private void writeModelKey(int at, String name) {
+            long hash = stringKey64(name);
+            put32(bin.a, at, (int) hash);
+            put32(bin.a, at + 4, (int) (hash >>> 32));
+            put32(bin.a, at + 8, attribKey(name));
+            setText(at + 12, name);
+        }
+
         String setModel(String node, String member, String name) {
-            Place p = fieldPlace("pvehicle", node, "MODEL", 0);
-            if (p.def == null) return "no MODEL field";
-            if (p.bin < 0) return "MODEL not in this node";
+            Place first = fieldPlace("pvehicle", node, "MODEL", 0);
+            if (first.def == null) return "no MODEL field";
             String key = member == null ? "" : member.toLowerCase(Locale.ROOT);
-            int[] offsets;
-            if (key.isEmpty()) {
-                offsets = p.def[2] >= 48 ? new int[] {0, 16, 32}
-                        : p.def[2] >= 32 ? new int[] {0, 16}
-                        : new int[] {0};
-            } else {
-                int at;
+            String[] names = {"collision64", "collision", "visual"};
+            int slot = -1;
+            if (!key.isEmpty()) {
                 switch (key) {
-                    case "collision64": at = 0; break;
-                    case "collision": at = 16; break;
-                    case "visual": at = 32; break;
+                    case "collision64": slot = 0; break;
+                    case "collision": slot = 1; break;
+                    case "visual": slot = 2; break;
                     default: return "unknown MODEL member " + member;
                 }
-                offsets = new int[] {at};
             }
             Set<String> done = modelFields.computeIfAbsent(node.toLowerCase(Locale.ROOT), n -> new HashSet<>());
-            long hash = stringKey64(name);
-            for (int at : offsets) {
-                if (p.def[2] < at + 16) return "MODEL member " + member + " exceeds field size " + p.def[2];
-                put32(bin.a, p.bin + at, (int) hash);
-                put32(bin.a, p.bin + at + 4, (int) (hash >>> 32));
-                put32(bin.a, p.bin + at + 8, attribKey(name));
-                setText(p.bin + at + 12, name);
+
+            // In the array form, the descriptor's size is the size of one element
+            // (16 bytes), not the size of all three StringKeys. fieldPlace() checks
+            // the array capacity before returning a writable element.
+            if ((first.def[4] & 1) != 0) {
+                int from = slot >= 0 ? slot : 0;
+                int to = slot >= 0 ? slot + 1 : 3;
+                if (first.def[2] < 16) return "MODEL array element smaller than 16 bytes: " + first.def[2];
+                for (int i = from; i < to; i++) {
+                    Place p = fieldPlace("pvehicle", node, "MODEL", i);
+                    if (p.bin < 0) return "MODEL array has no writable slot " + i;
+                    writeModelKey(p.bin, name);
+                    done.add(names[i]);
+                }
+                return null;
             }
-            if (key.isEmpty()) {
+
+            if (first.bin < 0) return "MODEL not in this node";
+            int[] offsets;
+            if (slot < 0) {
+                offsets = first.def[2] >= 48 ? new int[] {0, 16, 32}
+                        : first.def[2] >= 32 ? new int[] {0, 16}
+                        : new int[] {0};
+            } else {
+                offsets = new int[] {slot * 16};
+            }
+            for (int at : offsets) {
+                if (first.def[2] < at + 16)
+                    return "MODEL member " + member + " exceeds field size " + first.def[2];
+                writeModelKey(first.bin + at, name);
+            }
+            if (slot < 0) {
                 done.add("collision64");
-                if (p.def[2] >= 32) done.add("collision");
-                if (p.def[2] >= 48) done.add("visual");
+                if (first.def[2] >= 32) done.add("collision");
+                if (first.def[2] >= 48) done.add("visual");
             } else {
                 done.add(key);
             }
@@ -2221,19 +2247,29 @@ final class CarConverter {
 
         // Retain member-specific model references from the installer, and fill only omitted slots.
         String completeModel(String node, String name) {
-            Place p = fieldPlace("pvehicle", node, "MODEL", 0);
-            if (p.def == null || p.bin < 0) return "no writable MODEL field";
+            Place first = fieldPlace("pvehicle", node, "MODEL", 0);
+            if (first.def == null || first.bin < 0) return "no writable MODEL field";
             Set<String> done = modelFields.computeIfAbsent(node.toLowerCase(Locale.ROOT), n -> new HashSet<>());
             String[] members = {"Collision64", "Collision", "Visual"};
+            String[] keys = {"collision64", "collision", "visual"};
+            if ((first.def[4] & 1) != 0) {
+                if (first.def[2] < 16) return "MODEL array element smaller than 16 bytes: " + first.def[2];
+                for (int i = 0; i < members.length; i++) {
+                    if (!done.contains(keys[i])) {
+                        String why = setModel(node, members[i], name);
+                        if (why != null) return why;
+                    }
+                }
+                return null;
+            }
             int[] offsets = {0, 16, 32};
             for (int i = 0; i < members.length; i++) {
-                String key = members[i].toLowerCase(Locale.ROOT);
-                if (p.def[2] >= offsets[i] + 16 && !done.contains(key)) {
+                if (first.def[2] >= offsets[i] + 16 && !done.contains(keys[i])) {
                     String why = setModel(node, members[i], name);
                     if (why != null) return why;
                 }
             }
-            return p.def[2] < 16 ? "MODEL field too small" : null;
+            return first.def[2] < 16 ? "MODEL field too small" : null;
         }
 
         void setLayoutText(String cls, String node, int offset, String text) {
