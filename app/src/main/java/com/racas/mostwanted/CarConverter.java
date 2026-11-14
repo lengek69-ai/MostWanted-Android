@@ -2594,24 +2594,35 @@ final class CarConverter {
                 || !sub.containsKey(0x34604) || !sub.containsKey(0x34603))
             throw new Failure(Failure.Reason.UNSUPPORTED, "not the game's car tables");
 
-        // Native Unlimiter collection injection is disabled until the generated DBCarParts
-        // root is verified against the game's loader. Keep the known-good template path.
-        List<Kept> templateCars = new ArrayList<>(cars);
-        List<byte[]> unlimiterParts = Collections.emptyList();
+        // Inject only validated Unlimiter DBModelParts roots. Keep the game's safe
+        // Gallardo-derived car-type record until CAR.bin mapping is independently verified.
+        List<Kept> templateCars = new ArrayList<>();
+        List<byte[]> unlimiterParts = new ArrayList<>();
         for (Kept car : cars) {
+            boolean injectedParts = false;
             if (car.parts != null && car.parts.isFile()) {
                 try {
                     byte[] generated = UnlimiterDatabase.partsBlock(Files.readAllBytes(car.parts.toPath()), car.car);
-                    log.accept(car.car + ": Unlimiter DBModelParts preflight OK (" + generated.length
-                            + " byte DBCarParts root); native injection remains disabled, using " + TEMPLATE_PARTS + " fallback");
+                    unlimiterParts.add(generated);
+                    injectedParts = true;
+                    log.accept(car.car + ": Unlimiter DBModelParts validated for native injection ("
+                            + generated.length + " byte DBCarParts root)");
                 } catch (IOException | RuntimeException e) {
                     log.accept(car.car + ": Unlimiter DBModelParts preflight FAILED: " + e.getMessage()
-                            + "; native injection remains disabled, using " + TEMPLATE_PARTS + " fallback");
+                            + "; using " + TEMPLATE_PARTS + " fallback part rows");
+                }
+            }
+            if (!injectedParts) {
+                templateCars.add(car);
+                if (car.carInfo != null && car.carInfo.isFile()) {
+                    log.accept(car.car + ": CAR.bin retained but not injected; using fallback car-type record and "
+                            + TEMPLATE_PARTS + " part rows");
+                } else if (car.parts == null || !car.parts.isFile()) {
+                    log.accept(car.car + ": no Unlimiter PARTS.bin; using fallback car-type record and "
+                            + TEMPLATE_PARTS + " part rows");
                 }
             } else if (car.carInfo != null && car.carInfo.isFile()) {
-                log.accept(car.car + ": Unlimiter CAR.bin retained; parts data absent, using " + TEMPLATE_PARTS + " fallback");
-            } else {
-                log.accept(car.car + ": no Unlimiter CAR/PARTS data; using " + TEMPLATE_PARTS + " fallback");
+                log.accept(car.car + ": CAR.bin retained but not injected; using fallback car-type record");
             }
         }
 
