@@ -2599,8 +2599,17 @@ final class CarConverter {
         List<Kept> templateCars = new ArrayList<>(cars);
         List<byte[]> unlimiterParts = Collections.emptyList();
         for (Kept car : cars) {
-            if ((car.parts != null && car.parts.isFile()) || (car.carInfo != null && car.carInfo.isFile())) {
-                log.accept(car.car + ": Unlimiter CAR/PARTS data retained but not injected; using " + TEMPLATE_PARTS + " fallback");
+            if (car.parts != null && car.parts.isFile()) {
+                try {
+                    byte[] generated = UnlimiterDatabase.partsBlock(readAll(car.parts), car.car);
+                    log.accept(car.car + ": Unlimiter DBModelParts preflight OK (" + generated.length
+                            + " byte DBCarParts root); native injection remains disabled, using " + TEMPLATE_PARTS + " fallback");
+                } catch (IOException | RuntimeException e) {
+                    log.accept(car.car + ": Unlimiter DBModelParts preflight FAILED: " + e.getMessage()
+                            + "; native injection remains disabled, using " + TEMPLATE_PARTS + " fallback");
+                }
+            } else if (car.carInfo != null && car.carInfo.isFile()) {
+                log.accept(car.car + ": Unlimiter CAR.bin retained; parts data absent, using " + TEMPLATE_PARTS + " fallback");
             } else {
                 log.accept(car.car + ": no Unlimiter CAR/PARTS data; using " + TEMPLATE_PARTS + " fallback");
             }
