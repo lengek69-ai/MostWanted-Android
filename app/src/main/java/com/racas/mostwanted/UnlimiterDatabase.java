@@ -49,7 +49,8 @@ final class UnlimiterDatabase {
         p32(r,0x90,index); p32(r,0x94,c.i32()); p32(r,0x98,c.i32());
         c.copy(r,0x9C,10);
         for(int o=0xA8;o<=0xB8;o+=4)p32(r,o,c.i32());
-        c.copy(r,0xBC,10); r[0xC6]=(byte)c.u8(); r[0xC7]=(byte)c.u8(); c.skip(4);
+        c.copy(r,0xBC,10); r[0xC6]=(byte)c.u8(); r[0xC7]=(byte)c.u8();
+        // CAR.bin serialization omits the four-byte in-game padding field at 0xC8.
         p32(r,0xCC,c.i32()); c.end("CAR.bin"); return r;
     }
 
