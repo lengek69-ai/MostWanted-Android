@@ -84,19 +84,59 @@ final class UnlimiterDatabase {
         c.end("PARTS.bin");
 
         Out str=makeStrings(strings), offs=new Out(), attrs=new Out(), structs=new Out(), models=new Out(), array=new Out();
-        int attrCount=0, structCount=0;
+        LinkedHashMap<ByteKey,Integer> attributeIndices=new LinkedHashMap<>();
+        Map<List<Integer>,Integer> offsetIndices=new HashMap<>();
+        LinkedHashMap<ByteKey,Integer> structIndices=new LinkedHashMap<>();
+
         for(Part p:parts){
-            int attrOffset=0xFFFF;
-            if(!p.attrs.isEmpty()){
-                if(attrCount+p.attrs.size()>0xFFFF)throw new IOException("too many part attributes");
-                attrOffset=offs.size()/2; offs.u16(p.attrs.size());
-                for(Attr a:p.attrs){offs.u16(attrCount++); writeAttr(attrs,a,strings);}
+            List<Integer> attributeIds=new ArrayList<>(p.attrs.size());
+            for(Attr a:p.attrs){
+                Out encoded=new Out();
+                writeAttr(encoded,a,strings);
+                ByteKey signature=new ByteKey(encoded.bytes());
+                Integer index=attributeIndices.get(signature);
+                if(index==null){
+                    if(attributeIndices.size()>=0xFFFF)throw new IOException("too many unique part attributes");
+                    index=attributeIndices.size();
+                    attributeIndices.put(signature,index);
+                    attrs.bytes(signature.value);
+                }
+                attributeIds.add(index);
             }
+
+            int attrOffset=0xFFFF;
+            if(!attributeIds.isEmpty()){
+                Integer known=offsetIndices.get(attributeIds);
+                if(known==null){
+                    int newOffset=offs.size()/2;
+                    if(newOffset>=0xFFFF)throw new IOException("too many unique part attribute offsets");
+                    offsetIndices.put(new ArrayList<>(attributeIds),newOffset);
+                    offs.u16(attributeIds.size());
+                    for(int index:attributeIds)offs.u16(index);
+                    attrOffset=newOffset;
+                }else attrOffset=known;
+            }
+
             int structOffset=0xFFFF;
-            if(p.struct!=null){structOffset=structCount++;writeStruct(structs,p.struct,strings);}
+            if(p.struct!=null){
+                Out encoded=new Out();
+                writeStruct(encoded,p.struct,strings);
+                ByteKey signature=new ByteKey(encoded.bytes());
+                Integer index=structIndices.get(signature);
+                if(index==null){
+                    if(structIndices.size()>=0xFFFF)throw new IOException("too many unique part structs");
+                    index=structIndices.size();
+                    structIndices.put(signature,index);
+                    structs.bytes(signature.value);
+                }
+                structOffset=index;
+            }
+
             array.i32(hash(p.label)); array.u8(p.group); array.u16(p.upgrade); array.u8(0);
             array.u16(strIndex(strings,p.debug)); array.u16(attrOffset); array.u16(structOffset);
         }
+
+        int attrCount=attributeIndices.size(), structCount=structIndices.size();
         models.i32(hash(model));
         offs.padFor(0x0C); attrs.padFor(8); structs.padFor(8); models.padFor(4); array.padFor(8);
         Out customs=new Out(); customs.i32(custom.size());
@@ -108,10 +148,10 @@ final class UnlimiterDatabase {
         chunk(payload,0x34603,head.bytes());chunk(payload,0x34606,str.bytes());chunk(payload,0x3460C,offs.bytes());
         chunk(payload,0x34605,attrs.bytes());chunk(payload,0x3460A,structs.bytes());chunk(payload,0x3460B,models.bytes());
         chunk(payload,0x34604,array.bytes());chunk(payload,0x3460D,customs.bytes());
-        int padding=(0x80-((8+payload.size())&0x7F))&0x7F;if(padding!=0&&padding<8)padding+=0x80;
-        if(padding>=8){payload.i32(0);payload.i32(padding-8);payload.zeros(padding-8);}
+        // Nikki's DBModelPartManager.Encode writes exactly these eight subchunks. The
+        // manager's 0xC actual alignment is supplied by managerPadding() before this root;
+        // adding an in-root 0x80 padding chunk changes the native block structure.
         Out root=new Out();root.i32(0x80034602);root.i32(payload.size());root.bytes(payload.bytes());
-        if((root.size()&0x7F)!=0)throw new IOException("DBCarParts alignment failure");
         return root.bytes();
     }
 
@@ -149,7 +189,7 @@ final class UnlimiterDatabase {
                 case 5:a.e1=c.u8()!=0;a.e2=c.u8()!=0;if(a.e1)a.s1=c.str();if(a.e2)a.s2=c.str();break;
                 case 6:a.alpha=c.u8();a.blue=c.u8();a.green=c.u8();a.red=c.u8();break;
                 case 8:a.s1=c.str();break;
-                default:throw new IOException("unsupported custom attribute type "+a.type+" ("+a.name+")");
+                default:break; // Nikki Most Wanted consumes no serialized payload for other custom types.
             }
         }
         return a;
@@ -166,7 +206,7 @@ final class UnlimiterDatabase {
                 case 5:o.u16(a.e1?strIndex(strings,a.s1):0xFFFF);o.u16(a.e2?strIndex(strings,a.s2):0xFFFF);break;
                 case 6:o.u8(a.red);o.u8(a.green);o.u8(a.blue);o.u8(a.alpha);break;
                 case 8:o.i32(hash(a.s1));break;
-                default:throw new IOException("unsupported custom attribute type "+a.type);
+                default:o.i32(0);break; // Matches Nikki CustomAttribute.Assemble default case.
             }
         }else switch(a.type){
             case 1:o.i32(a.value==0?0:1);break;
@@ -239,6 +279,12 @@ final class UnlimiterDatabase {
         void padFor(int base){zeros((16-((size()+base)&15))&15);}
         void p32(int p,int v){byte[]a=b.toByteArray();UnlimiterDatabase.p32(a,p,v);b.reset();bytes(a);}
         byte[]bytes(){return b.toByteArray();}
+    }
+    private static final class ByteKey{
+        final byte[] value; final int hash;
+        ByteKey(byte[] value){this.value=value.clone();this.hash=Arrays.hashCode(this.value);}
+        @Override public int hashCode(){return hash;}
+        @Override public boolean equals(Object other){return other instanceof ByteKey&&Arrays.equals(value,((ByteKey)other).value);}
     }
     private static final class Part{String label,debug;int group,upgrade;Struct struct;List<Attr>attrs;}
     private static final class Struct{boolean templated,concatExists;String concat;boolean[]lodExists=new boolean[5];String[]lod=new String[5];}
