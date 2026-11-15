@@ -2026,6 +2026,26 @@ final class CarConverter {
             }
         }
 
+        // Expose the game's handling schema in the installer log before choosing safe MAX values.
+        // Field keys are hashes, so include the hash and type/layout metadata for exact identification.
+        void logClassSchema(String cls, String node, Consumer<String> log) {
+            VltClass vc = classes.get(attribKey(cls));
+            if (vc == null || !has(cls, node)) {
+                log.accept(node + ": no " + cls + " schema");
+                return;
+            }
+            List<Integer> keys = new ArrayList<>(vc.fields.keySet());
+            keys.sort(Integer::compareUnsigned);
+            for (int key : keys) {
+                int[] d = vc.fields.get(key);
+                String type = typeNames.get(d[0]);
+                log.accept(String.format(Locale.ROOT,
+                        "%s.%s field=%08x type=%s offset=%d size=%d count=%d flags=%02x",
+                        node, cls, key, type == null ? String.format(Locale.ROOT, "%08x", d[0]) : type,
+                        d[1], d[2], d[3], d[4]));
+            }
+        }
+
         boolean has(String cls, String node) {
             return colls.containsKey(pair(attribKey(cls), attribKey(node)));
         }
@@ -3092,6 +3112,7 @@ final class CarConverter {
                         log.accept(String.format(Locale.ROOT, "%s: wheels at x %.3f, %.3f, y %.3f, %.3f, radius %.3f", k.car, w.frontX, w.rearX, w.frontY, w.rearY, w.radius));
                     }
                 }
+                v.logClassSchema("ecar", node, log);
                 if (!v.has("pvehicle", node)) v.cloneNode("pvehicle", "gallardo", node, null);
                 if (!fe.has("frontend", node)) fe.cloneNode("frontend", "gallardo", node, null);
                 // a copied pvehicle still names the Gallardo's: the car select then took this car for it
