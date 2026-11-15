@@ -166,17 +166,9 @@ final class UnlimiterDatabase {
     }
 
     private static Struct readStruct(Cursor c)throws IOException{
-        if(c.u8()==0)return null;
-        Struct s=new Struct();
-        s.templated=c.u8()!=0;
-        s.concatExists=c.u8()!=0;
+        if(c.u8()==0)return null; Struct s=new Struct();s.templated=c.u8()!=0;s.concatExists=c.u8()!=0;
         if(s.concatExists)s.concat=c.str();
-
-        // Nikki serializes all five existence flags before any LOD names.
-        // Reading a name inside this loop consumes the remaining flags as text,
-        // corrupting the first LOD (and every following absent/present LOD pattern).
-        for(int i=0;i<5;i++)s.lodExists[i]=c.u8()!=0;
-        for(int i=0;i<5;i++)if(s.lodExists[i])s.lod[i]=c.str();
+        for(int i=0;i<5;i++){s.lodExists[i]=c.u8()!=0;if(s.lodExists[i])s.lod[i]=c.str();}
         return s;
     }
 
